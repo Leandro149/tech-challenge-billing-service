@@ -1,0 +1,21 @@
+@baseUrl = http://localhost:5080
+@mercadoPagoOrderId = ORD_SUBSTITUA_PELO_ID_RETORNADO
+
+### Disponibilidade da API
+GET {{baseUrl}}/health
+
+### Criar Pix no ambiente configurado (use credenciais de conta de teste)
+# Gere uma nova chave para outra operação; reutilize a mesma ao repetir esta.
+POST {{baseUrl}}/api/payments/pix
+Content-Type: application/json
+X-Idempotency-Key: 5c99517b-47ee-4654-8c1e-8bd9c5151250
+
+{
+  "orderId": "pedido-123",
+  "amount": 50.00,
+  "payerEmail": "test_payer@example.com",
+  "payerFirstName": "APRO"
+}
+
+### Consultar estado atual usando o ID ORD... retornado pelo Mercado Pago
+GET {{baseUrl}}/api/payments/{{mercadoPagoOrderId}}

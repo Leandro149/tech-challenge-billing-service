@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Billing.Api.Tests;
 
+[Trait("Category", "Integration")]
 public sealed class BillingSagaTests
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);

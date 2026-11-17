@@ -2,7 +2,7 @@
 
 - MP-01: POST /api/payments/pix deve validar dados e chave de idempotência, criar order e retornar ID, status e dados Pix.
 - MP-02: GET /api/payments/{orderId} deve consultar a Orders API e retornar o mesmo contrato.
-- MP-03: Webhook deve rejeitar assinatura inválida, consultar a order assinada e aceitar reentregas sem efeitos duplicados.
+- MP-03: Webhook deve rejeitar assinatura inválida, consultar a order assinada e aceitar reentregas. Com a integração RabbitMQ, publica o estado com eventId estável para deduplicação no consumidor (ver `.specs/features/rabbitmq/spec.md`).
 - MP-04: Frontend nas origens configuradas deve receber CORS; erros devem retornar ProblemDetails sem credenciais.
 - MP-05: Credenciais não são versionadas; documentação deve explicar configuração, teste Pix APRO e limitações acadêmicas.
 

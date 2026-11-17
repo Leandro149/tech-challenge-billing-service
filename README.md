@@ -4,11 +4,12 @@ API em C# / ASP.NET Core 10 para integrar o frontend de um trabalho acadêmico a
 
 ## Executar
 
-Pré-requisito: SDK do .NET 10.
+Pré-requisitos: SDK do .NET 10; Docker com suporte a containers Linux e Docker Compose para executar o RabbitMQ local.
 
 Na raiz do repositório, configure as credenciais locais de uma **aplicação/conta de teste**:
 
 ```powershell
+docker compose up -d --wait
 .\scripts\Set-LocalSecrets.ps1
 dotnet run --project src/Billing.Api --launch-profile http
 ```
@@ -17,7 +18,8 @@ O script pede o Access Token com entrada oculta e salva em .NET User Secrets, fo
 
 - API: http://localhost:5080
 - Swagger: http://localhost:5080/swagger
-- Health: http://localhost:5080/health (verifica a API, não a credencial do Mercado Pago)
+- Health: http://localhost:5080/health (verifica a API, não a credencial do Mercado Pago nem a conexão com RabbitMQ)
+- Painel RabbitMQ: http://localhost:15672 (usuário `billing`, senha local de demonstração `billing-local`)
 
 Alternativamente, configure User Secrets diretamente (substitua os placeholders localmente):
 
@@ -125,11 +127,63 @@ As origens `http://localhost:3000`, `http://localhost:4200` e `http://localhost:
 3. Cadastre `https://SEU_HOST/api/webhooks/mercado-pago`.
 4. Copie a assinatura secreta para `MercadoPago:WebhookSecret` nos User Secrets e reinicie a API.
 
-O Mercado Pago enviará `data.id` e `type=order` na query string, com os headers `x-signature` e `x-request-id`. A API valida HMAC-SHA256 em tempo constante, usa o ID assinado da query para consultar a order e registra o status atual no log. Timestamps em segundos e milissegundos são aceitos, com tolerância de cinco minutos; mantenha o relógio do servidor sincronizado. O ID mantém a capitalização recebida, seguindo o SDK .NET oficial.
+O Mercado Pago enviará `data.id` e `type=order` na query string, com os headers `x-signature` e `x-request-id`. A API valida HMAC-SHA256 em tempo constante, usa o ID assinado da query para consultar a order, publica o estado atual no RabbitMQ e registra o status no log. Timestamps em segundos e milissegundos são aceitos, com tolerância de cinco minutos; mantenha o relógio do servidor sincronizado. O ID mantém a capitalização recebida, seguindo o SDK .NET oficial.
 
-Notificações sem assinatura válida retornam `401`. Sem segredo configurado, o endpoint retorna `503`. Falhas na consulta ao Mercado Pago retornam erro para permitir nova entrega. Reentregas são aceitas e apenas repetem a consulta; não há confirmação de pedido, banco ou publicação de eventos neste projeto.
+Notificações sem assinatura válida retornam `401`. Sem segredo configurado, o endpoint retorna `503`. Falhas na consulta ao Mercado Pago ou na publicação no RabbitMQ retornam erro para permitir nova entrega. O `200` com `{"received":true}` só é retornado após a confirmação do broker. Reentregas são aceitas e podem publicar eventos duplicados; consumidores precisam deduplicar pelo `eventId`. Não há confirmação de pedido nem banco neste projeto.
 
 O frontend consulta o GET para atualizar a tela. Ele não recebe o webhook diretamente.
+
+## RabbitMQ
+
+O fluxo implementado é: webhook assinado → consulta à Orders API → publicação do estado atual → confirmação do broker → HTTP `200`. POST de criação de Pix e GET de consulta não publicam eventos. Um consumidor em outro serviço pode usar o evento para atualizar um pedido; este repositório implementa o publicador.
+
+Inicie o broker e depois a API:
+
+```powershell
+docker compose up -d --wait
+dotnet run --project src/Billing.Api --launch-profile http
+```
+
+O Compose usa a [imagem oficial do RabbitMQ](https://hub.docker.com/_/rabbitmq), volume persistente e portas publicadas apenas em `127.0.0.1`. As credenciais `billing` / `billing-local` são exemplos para desenvolvimento local. Para outro broker, configure `RabbitMq:HostName`, `RabbitMq:Port`, `RabbitMq:VirtualHost`, `RabbitMq:UserName` e `RabbitMq:Password` via User Secrets ou variáveis de ambiente, como `RabbitMq__Password`; não versione credenciais reais. Esta configuração local usa AMQP sem TLS.
+
+| Recurso | Valor padrão |
+| --- | --- |
+| AMQP | `localhost:5672` |
+| Painel | http://localhost:15672 |
+| Exchange topic durável | `billing.events` |
+| Routing key e tipo AMQP | `payment.status.updated.v1` |
+| Fila durável | `billing.payment-status` |
+| Timeout da publicação | `RabbitMq:PublishTimeoutSeconds` = `5` |
+
+Exchange e fila são configuráveis por `RabbitMq:Exchange` e `RabbitMq:Queue`. A conexão é aberta e os recursos são declarados no primeiro webhook válido que consiga consultar a order. Portanto, a fila pode ainda não aparecer no painel logo após iniciar a API. A API pode iniciar sem o broker, mas um webhook de Order não será aceito com sucesso enquanto a publicação falhar. O cliente pode levar alguns segundos adicionais para encerrar uma conexão que deixou de responder após o timeout.
+
+Cada publicação contém JSON em camelCase, com as propriedades AMQP `ContentType=application/json`, mensagem persistente, `Type=payment.status.updated.v1` e `MessageId` igual ao `eventId`:
+
+```json
+{
+  "eventId": "<sha256-da-combinacao-tipo-paymentId-status-statusDetail>",
+  "observedAt": "2026-11-16T15:00:00+00:00",
+  "paymentId": "ORD123",
+  "orderId": "pedido-123",
+  "amount": 50.00,
+  "status": "processed",
+  "statusDetail": "accredited"
+}
+```
+
+`paymentId` identifica a order no Mercado Pago; `orderId` é a referência do pedido no seu sistema e pode ser `null`. O evento informa o estado consultado, inclusive estados de espera, cancelamento ou reembolso. `observedAt` é o momento da observação pela API, não a data da transição no provedor. Dados do pagador, token e conteúdo Pix não são publicados.
+
+As mensagens usam [publisher confirms](https://www.rabbitmq.com/tutorials/tutorial-seven-dotnet) e `mandatory=true`: rejeição pelo broker, mensagem sem rota ou timeout resultam em `503`. A próxima tentativa recria conexão/canal e declara novamente a topologia após uma falha. Não existe outbox ou fila de retentativas em memória: a recuperação depende da reentrega do webhook pelo Mercado Pago.
+
+O mesmo `paymentId`/`status`/`statusDetail` gera o mesmo `eventId`, mesmo em entregas diferentes. O consumidor deve persistir a deduplicação junto com os efeitos de negócio e só enviar o ACK após concluir o processamento. Duplicatas são possíveis, inclusive se o broker aceitou a mensagem mas a confirmação se perdeu. Não há garantia de entrega exatamente uma vez, ordenação das transições ou histórico completo; notificações concorrentes podem observar estados diferentes. Para evitar regressão de status no serviço consumidor, reconcilie estados conflitantes com a fonte de verdade.
+
+Para conferir manualmente, crie um Pix de teste pelo Swagger, usando credencial de teste, e receba ou simule no Mercado Pago uma notificação com o ID `ORD...` existente. Depois, no painel RabbitMQ, abra **Queues and Streams → billing.payment-status → Get messages**, usando requeue para manter a mensagem disponível. Consultar a URL do webhook no navegador envia GET e não testa esse fluxo POST assinado.
+
+Para encerrar o broker preservando as mensagens no volume:
+
+```powershell
+docker compose down
+```
 
 ## Erros e limites da demonstração
 
@@ -143,7 +197,7 @@ Os erros usam ProblemDetails, sem expor o token ou o corpo de erro do provedor:
 | `409` | Conflito na operação |
 | `422` | Dados recusados pelo Mercado Pago |
 | `502` | Falha de comunicação, credencial recusada ou resposta inválida do provedor |
-| `503` | Configuração ausente ou limite de chamadas atingido |
+| `503` | Configuração ausente, limite de chamadas atingido ou publicação no RabbitMQ não confirmada |
 | `504` | Timeout no Mercado Pago |
 
 Esta API é uma demonstração sem autenticação e sem persistência local. Aceita o valor informado na requisição porque não existe um serviço de pedidos/catálogo neste repositório. Para uso real, o backend deve obter e validar o preço do pedido, autorizar o acesso de cada usuário à cobrança e persistir os efeitos de negócio de forma idempotente. A Public Key e o Access Token não substituem a autenticação dos usuários da sua API.
@@ -155,7 +209,20 @@ dotnet build
 dotnet test
 ```
 
-Os testes usam um servidor HTTP de teste e um provedor simulado. Cobrem contratos de criação/consulta, validação de entrada, idempotência enviada ao provedor, erros, CORS e assinatura/reentrega de webhook; não criam cobranças externas. O arquivo `src/Billing.Api/Billing.Api.http` contém requisições para execução manual com uma credencial de teste configurada.
+Por padrão, os testes usam um servidor HTTP de teste, um provedor e um publicador simulados. Também verificam o timeout do cliente real contra um servidor TCP que não responde ao AMQP. Cobrem contratos de criação/consulta, validação de entrada, idempotência enviada ao provedor, erros, CORS, assinatura/reentrega de webhook, conteúdo do evento e confirmação da publicação antes da resposta HTTP; não criam cobranças externas. O arquivo `src/Billing.Api/Billing.Api.http` contém requisições para execução manual com uma credencial de teste configurada.
+
+Dois testes com RabbitMQ real ficam explicitamente ignorados até habilitá-los. Com o Compose saudável e as credenciais locais padrão, execute no PowerShell:
+
+```powershell
+$env:BILLING_TEST_RABBITMQ = "true"
+try {
+    dotnet test
+} finally {
+    Remove-Item Env:BILLING_TEST_RABBITMQ -ErrorAction SilentlyContinue
+}
+```
+
+Esses testes comprovam a entrega de webhook assinado até a fila, propriedades de persistência, payload, publicação concorrente, falha por falta de binding e recuperação. Usam recursos temporários exclusivos e removem apenas esses recursos; não consomem mensagens da fila de negócio. O provedor de pagamento permanece simulado.
 
 ## Documentação oficial
 

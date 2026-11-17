@@ -214,8 +214,12 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
                     order.NextAttemptAt = DateTimeOffset.UtcNow.AddSeconds(Math.Min(300, 5 * Math.Pow(2, Math.Min(order.Failures, 6))));
                     if (order.Failures >= options.Value.MaxFailures) order.CompensationStatus = "manual_review";
                     store.Save(order);
-                    logger.LogWarning("Reconciliação da OS {OrderId} pendente ({FailureType}), tentativa {Attempt}.",
-                        order.OrdemServicoUniqueCode, exception.GetType().Name, order.Failures);
+                    var providerError = exception as MercadoPagoException;
+                    logger.LogWarning(
+                        "Reconciliação da OS {OrderId} pendente ({FailureType}), tentativa {Attempt}. " +
+                        "ProviderStatus={ProviderStatus} ProviderBody={ProviderBody}",
+                        order.OrdemServicoUniqueCode, exception.GetType().Name, order.Failures,
+                        providerError is null ? null : (int)providerError.StatusCode, providerError?.ProviderBody);
                 }
             }
             finally { gate.Release(); }

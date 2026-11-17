@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Billing.Api.Contracts;
 using Microsoft.Extensions.Options;
@@ -15,6 +16,13 @@ public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptio
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+
+    private const int MaxErrorBodyLength = 2000;
+    private static readonly string[] SensitiveKeys =
+    [
+        "token", "authorization", "secret", "password", "email", "identification",
+        "document", "phone", "card", "qr_code", "first_name", "last_name"
+    ];
 
     public Task<PaymentResponse> CreatePixAsync(CreatePixRequest input, string idempotencyKey, CancellationToken ct)
     {
@@ -69,8 +77,49 @@ public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptio
         request.Headers.Add("X-Idempotency-Key", key);
         // Devolução total e cancelamento da Orders API usam POST sem body.
         using var response = await http.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode) throw new MercadoPagoException(response.StatusCode);
+        if (!response.IsSuccessStatusCode)
+            throw new MercadoPagoException(response.StatusCode, await ReadSafeErrorBodyAsync(response, ct));
         // Sucesso HTTP aceita a solicitação; a confirmação é consultada separadamente.
+    }
+
+    private static async Task<string?> ReadSafeErrorBodyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var raw = await response.Content.ReadAsStringAsync(ct);
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            var node = JsonNode.Parse(raw);
+            Redact(node);
+            var text = node?.ToJsonString();
+            return text is { Length: > MaxErrorBodyLength } ? text[..MaxErrorBodyLength] + "…" : text;
+        }
+        catch (JsonException)
+        {
+            return "<corpo não JSON omitido>";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static void Redact(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var key in obj.Select(p => p.Key).ToList())
+                {
+                    if (SensitiveKeys.Any(s => key.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                        obj[key] = "***";
+                    else
+                        Redact(obj[key]);
+                }
+                break;
+            case JsonArray array:
+                foreach (var item in array) Redact(item);
+                break;
+        }
     }
 
     private async Task<MercadoPagoOrder> SendOrderAsync(HttpMethod method, string path, object? payload, string? key, CancellationToken ct)
@@ -115,9 +164,12 @@ public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptio
     }
 }
 
-public sealed class MercadoPagoException(HttpStatusCode statusCode) : Exception("Falha na operação com o Mercado Pago.")
+public sealed class MercadoPagoException(HttpStatusCode statusCode, string? providerBody = null)
+    : Exception("Falha na operação com o Mercado Pago.")
 {
     public HttpStatusCode StatusCode { get; } = statusCode;
+    // Corpo JSON do provedor, com campos sensíveis mascarados e tamanho limitado.
+    public string? ProviderBody { get; } = providerBody;
 }
 
 public sealed class IntegrationConfigurationException(string message) : Exception(message);

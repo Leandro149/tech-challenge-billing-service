@@ -31,12 +31,14 @@ public sealed class BillingFactory : WebApplicationFactory<Program>
     public RecordingPublisher Publisher { get; } = new();
     public bool UseRabbitMq { get; init; }
     public bool SagaEnabled { get; init; }
+    public string? PaymentProvider { get; init; }
+    public string EnvironmentName { get; init; } = "Development";
     public string? SagaDatabasePath { get; init; }
     public string RabbitMqResource { get; } = $"billing.test.{Guid.NewGuid():N}";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment("Development");
+        builder.UseEnvironment(EnvironmentName);
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["MercadoPago:AccessToken"] = AccessToken,
@@ -54,6 +56,9 @@ public sealed class BillingFactory : WebApplicationFactory<Program>
             ["RabbitMq:Exchange"] = RabbitMqResource,
             ["RabbitMq:Queue"] = RabbitMqResource
         }));
+        if (PaymentProvider is not null)
+            builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(
+                new Dictionary<string, string?> { ["Payment:Provider"] = PaymentProvider }));
         builder.ConfigureServices(services =>
         {
             if (!UseRabbitMq)

@@ -10,6 +10,15 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<IntegrationExceptionHandler>();
 builder.Services.Configure<MercadoPagoOptions>(builder.Configuration.GetSection("MercadoPago"));
+builder.Services.AddOptions<PaymentOptions>().BindConfiguration("Payment")
+    .Validate(options => options.Provider is PaymentOptions.MercadoPago or PaymentOptions.Fake,
+        "Payment:Provider deve ser MercadoPago ou Fake.")
+    .Validate<IHostEnvironment>((options, environment) =>
+        options.Provider != PaymentOptions.Fake || PaymentOptions.AllowsFake(environment),
+        "Payment:Provider=Fake só está disponível em Development ou Testing.")
+    .ValidateOnStart();
+builder.Services.AddScoped<PaymentProviders>();
+builder.Services.AddSingleton<FakePaymentProvider>();
 builder.Services.AddOptions<RabbitMqOptions>()
     .BindConfiguration("RabbitMq")
     .ValidateDataAnnotations()

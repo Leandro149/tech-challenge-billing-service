@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace Billing.Api.Integrations;
 
-public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> options)
+public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> options) : IPaymentProvider
 {
     private static readonly JsonSerializerOptions ProviderJson = new(JsonSerializerDefaults.Web)
     {
@@ -48,7 +48,7 @@ public sealed class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptio
     private async Task<PaymentResponse> SendAsync(HttpMethod method, string path, object? payload, string? key, CancellationToken ct)
         => Map(await SendOrderAsync(method, path, payload, key, ct));
 
-    public async Task<MercadoPagoFinancialState> GetFinancialStateAsync(string orderId, CancellationToken ct)
+    public async Task<PaymentFinancialState> GetFinancialStateAsync(string orderId, CancellationToken ct)
     {
         var order = await SendOrderAsync(HttpMethod.Get, $"v1/orders/{Uri.EscapeDataString(orderId)}", null, null, ct);
         var payment = Map(order);
@@ -173,5 +173,3 @@ public sealed class MercadoPagoException(HttpStatusCode statusCode, string? prov
 }
 
 public sealed class IntegrationConfigurationException(string message) : Exception(message);
-
-public sealed record MercadoPagoFinancialState(PaymentResponse Payment, bool RefundConfirmed, bool RefundInProgress);

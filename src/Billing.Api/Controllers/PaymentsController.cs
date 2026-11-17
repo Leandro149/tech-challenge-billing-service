@@ -7,7 +7,7 @@ namespace Billing.Api.Controllers;
 
 [ApiController]
 [Route("api/payments")]
-public sealed class PaymentsController(MercadoPagoClient mercadoPago) : ControllerBase
+public sealed class PaymentsController(PaymentProviders providers) : ControllerBase
 {
     [HttpPost("pix")]
     [ProducesResponseType<PaymentResponse>(StatusCodes.Status201Created)]
@@ -17,7 +17,7 @@ public sealed class PaymentsController(MercadoPagoClient mercadoPago) : Controll
         [FromHeader(Name = "X-Idempotency-Key"), Required, RegularExpression(@"^[a-zA-Z0-9_.-]{1,128}$")] string idempotencyKey,
         CancellationToken ct)
     {
-        var payment = await mercadoPago.CreatePixAsync(input, idempotencyKey, ct);
+        var payment = await providers.Resolve(providers.Default).CreatePixAsync(input, idempotencyKey, ct);
         return CreatedAtAction(nameof(Get), new { orderId = payment.Id }, payment);
     }
 
@@ -25,6 +25,6 @@ public sealed class PaymentsController(MercadoPagoClient mercadoPago) : Controll
     [ProducesResponseType<PaymentResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PaymentResponse>> Get(
-        [FromRoute, RegularExpression(@"^ORD[a-zA-Z0-9]{1,61}$")] string orderId, CancellationToken ct) =>
-        Ok(await mercadoPago.GetAsync(orderId, ct));
+        [FromRoute, RegularExpression(@"^ORD(?:[a-zA-Z0-9]{1,61}|-FAKE-[0-9a-f]{32})$")] string orderId, CancellationToken ct) =>
+        Ok(await providers.ForPaymentId(orderId).GetAsync(orderId, ct));
 }

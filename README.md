@@ -16,6 +16,17 @@ Após todos os testes passarem em um push para `develop`, a aplicação é publi
 
 Filtros locais: `dotnet test --filter "Category=Unit"`, `dotnet test --filter "Category=Integration&Category!=RabbitMq"` e, com `BILLING_TEST_RABBITMQ=true` e Compose saudável, `dotnet test --filter "Category=RabbitMq"`. A esteira não exige credenciais reais do Mercado Pago.
 
+## SonarQube
+
+O job **SonarQube** analisa o código C# com o SonarScanner for .NET, importa a cobertura OpenCover dos testes da esteira e aguarda o Quality Gate. Ele roda em pushes para `develop` e em pull requests do próprio repositório para essa branch.
+
+1. Crie ou importe o projeto no SonarQube. No Cloud, selecione análise via GitHub Actions e desative a análise automática se ela estiver ativa.
+2. Em **Settings → Secrets and variables → Actions** no GitHub, cadastre o secret `SONAR_TOKEN` com permissão **Execute Analysis** para o projeto.
+3. Em **Variables**, cadastre `SONAR_ORGANIZATION` para SonarQube Cloud, ou `SONAR_HOST_URL` para um SonarQube Server acessível pelo runner. Para uma organização Cloud na região dos EUA, defina também `SONAR_REGION=us`.
+4. Cadastre a variável `SONAR_PROJECT_KEY` por último para ativar o job. Consulte o resultado do Quality Gate e o link da análise no log do job.
+
+Para analisar branches de desenvolvimento e seus pull requests, use um plano Cloud com esse suporte (OSS, Team ou Enterprise) ou SonarQube Server Developer Edition ou superior. Em um projeto Cloud novo, faça a análise inicial da branch principal antes de analisar a branch de desenvolvimento. [Planos e suporte a branches](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans) · [Primeira análise no Cloud](https://docs.sonarsource.com/sonarqube-cloud/getting-started/first-analysis)
+
 ## Executar
 
 Pré-requisitos: SDK do .NET 10; Docker com suporte a containers Linux e Docker Compose para executar o RabbitMQ local.

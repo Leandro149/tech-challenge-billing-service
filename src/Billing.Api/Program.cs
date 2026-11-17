@@ -1,5 +1,6 @@
 using Billing.Api.Infrastructure;
 using Billing.Api.Integrations;
+using Billing.Api.Messaging;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
@@ -8,6 +9,11 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<IntegrationExceptionHandler>();
 builder.Services.Configure<MercadoPagoOptions>(builder.Configuration.GetSection("MercadoPago"));
+builder.Services.AddOptions<RabbitMqOptions>()
+    .BindConfiguration("RabbitMq")
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder.Services.AddSingleton<IPaymentEventPublisher, RabbitMqPaymentEventPublisher>();
 builder.Services.AddHttpClient<MercadoPagoClient>(http =>
 {
     http.BaseAddress = new Uri("https://api.mercadopago.com/");

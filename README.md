@@ -2,6 +2,12 @@
 
 API em C# / ASP.NET Core 10 para integrar o frontend de um trabalho acadêmico ao Pix do Mercado Pago, usando a Orders API. Este repositório contém apenas o backend.
 
+## Saga e fluxo distribuído — Épico 2
+
+A **TC4-08 — Definir estratégia do Saga Pattern** está documentada no [ADR-0001](docs/architecture/adr-0001-saga-os.md). A decisão adota uma Saga orquestrada no serviço de OS e define estados, contratos, compensações, correlação com billing, persistência e recuperação. [Requisitos e situação das etapas](.specs/features/saga/spec.md).
+
+Esta entrega define a arquitetura. O orquestrador e as etapas TC4-09 (criação da OS), TC4-10 (orçamento) e TC4-11 (aprovação) ainda precisam ser implementados nos serviços responsáveis. A API de billing mantém o contrato atual de pagamentos e eventos RabbitMQ.
+
 ## Executar
 
 Pré-requisitos: SDK do .NET 10; Docker com suporte a containers Linux e Docker Compose para executar o RabbitMQ local.

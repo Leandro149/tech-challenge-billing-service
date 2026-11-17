@@ -8,6 +8,14 @@ A integração atual usa **Saga coreografada**: consome `os.criada` e `execution
 
 O [ADR-0001](docs/architecture/adr-0001-saga-os.md) registra a proposta histórica de orquestração, substituída pelo contrato coreografado da Fase 4. Endpoints de pagamentos, webhook e evento financeiro v1 são preservados.
 
+## CI/CD — develop
+
+A esteira [billing-ci-cd.yml](.github/workflows/billing-ci-cd.yml) executa em pushes e pull requests para `develop`. Os jobs fazem restore/build Release, testes unitários, integração HTTP/Saga e testes com RabbitMQ efêmero. Cada suíte gera TRX, cobertura Cobertura XML e resumo; suítes vazias ou com testes ignorados bloqueiam a entrega.
+
+Após todos os testes passarem em um push para `develop`, a aplicação é publicada, iniciada para conferir `/health` e empacotada como `billing-service-develop.tar.gz`, com checksum SHA256. Baixe o pacote em **Actions → execução → Artifacts**; ele requer runtime ASP.NET Core 10. Pull requests geram relatórios, sem pacote de entrega. Não há implantação automática em servidor nem publicação de imagem, conforme o escopo escolhido.
+
+Filtros locais: `dotnet test --filter "Category=Unit"`, `dotnet test --filter "Category=Integration&Category!=RabbitMq"` e, com `BILLING_TEST_RABBITMQ=true` e Compose saudável, `dotnet test --filter "Category=RabbitMq"`. A esteira não exige credenciais reais do Mercado Pago.
+
 ## Executar
 
 Pré-requisitos: SDK do .NET 10; Docker com suporte a containers Linux e Docker Compose para executar o RabbitMQ local.

@@ -44,6 +44,8 @@ public sealed class BillingOrder
     public string Decision { get; set; } = "pending";
     public string? PaymentId { get; set; }
     public string? PaymentKey { get; set; }
+    // Registros sem este campo foram criados quando Mercado Pago era o único provedor.
+    public string? PaymentProvider { get; set; }
     public string? PayerEmail { get; set; }
     public string? PayerFirstName { get; set; }
     public bool PaymentCreationPending { get; set; }

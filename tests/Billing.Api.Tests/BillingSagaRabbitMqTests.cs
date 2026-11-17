@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Billing.Api.Contracts;
 using Billing.Api.Saga;
 using RabbitMQ.Client;
 
@@ -11,9 +12,17 @@ public sealed class BillingSagaRabbitMqTests
 {
     [RabbitMqFact]
     [Trait("Category", "RabbitMq")]
-    public async Task Choreography_consumes_os_publishes_only_paid_approval_compensates_and_dead_letters_poison()
+    public Task Choreography_consumes_os_publishes_only_paid_approval_compensates_and_dead_letters_poison() =>
+        RunChoreographyAsync(useFake: false);
+
+    [RabbitMqFact]
+    [Trait("Category", "RabbitMq")]
+    public Task Fake_payment_choreography_publishes_approval_and_confirms_refund_without_mercado_pago() =>
+        RunChoreographyAsync(useFake: true);
+
+    private static async Task RunChoreographyAsync(bool useFake)
     {
-        var factory = new BillingFactory { SagaEnabled = true };
+        var factory = new BillingFactory { SagaEnabled = true, PaymentProvider = useFake ? "Fake" : null };
         var settings = new BillingSagaOptions
         {
             Exchange = factory.RabbitMqResource + ".saga", Queue = factory.RabbitMqResource + ".saga"
@@ -58,10 +67,14 @@ public sealed class BillingSagaRabbitMqTests
             await Publish("os.criada", created); // Redelivery não pode apagar orçamento/decisão.
             using var payment = await client.SendAsync(BillingSagaTests.Approval(os), deadline.Token);
             Assert.Equal(HttpStatusCode.OK, payment.StatusCode);
-            Assert.Null(await channel.BasicGetAsync(outputQueue, true, deadline.Token));
-            Volatile.Write(ref phase, 1);
-            using var webhook = await client.SendAsync(BillingSagaTests.Webhook(), deadline.Token);
-            Assert.Equal(HttpStatusCode.OK, webhook.StatusCode);
+            var paymentId = (await payment.Content.ReadFromJsonAsync<PaymentResponse>(deadline.Token))!.Id;
+            if (!useFake)
+            {
+                Assert.Null(await channel.BasicGetAsync(outputQueue, true, deadline.Token));
+                Volatile.Write(ref phase, 1);
+                using var webhook = await client.SendAsync(BillingSagaTests.Webhook(), deadline.Token);
+                Assert.Equal(HttpStatusCode.OK, webhook.StatusCode);
+            }
             BasicGetResult? approved = null;
             await WaitUntilAsync(async () => (approved = await channel.BasicGetAsync(outputQueue, true, deadline.Token)) is not null, deadline.Token);
             Assert.Equal("billing.aprovado", approved!.RoutingKey);
@@ -71,9 +84,17 @@ public sealed class BillingSagaRabbitMqTests
             Assert.Equal(TimeSpan.Zero, payload.OccurredAt.Offset);
             Assert.True(approved.BasicProperties.Persistent);
 
-            await Publish("execution.falhou", BillingSagaTests.EventBody(os));
+            var failed = BillingSagaTests.EventBody(os);
+            await Publish("execution.falhou", failed);
+            await Publish("execution.falhou", failed);
             await WaitUntilAsync(() => Task.FromResult(BillingSagaTests.Store(factory).Get(os)?.CompensationStatus == "refunded"), deadline.Token);
-            Assert.Equal(1, refundRequests);
+            Assert.Equal(useFake ? 0 : 1, refundRequests);
+            if (useFake)
+            {
+                var refunded = await client.GetFromJsonAsync<PaymentResponse>($"/api/payments/{paymentId}", deadline.Token);
+                Assert.Equal("refunded", refunded!.Status);
+                Assert.Equal(0, factory.Requests);
+            }
 
             var rejectedOs = Guid.NewGuid();
             await Publish("os.criada", BillingSagaTests.EventBody(rejectedOs));

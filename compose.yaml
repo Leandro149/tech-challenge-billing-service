@@ -1,4 +1,22 @@
 services:
+  billing:
+    profiles: [billing]
+    build: ./src/Billing.Api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Payment__Provider: ${Payment__Provider:-MercadoPago}
+      MercadoPago__AccessToken: ${MercadoPago__AccessToken:-}
+      MercadoPago__WebhookSecret: ${MercadoPago__WebhookSecret:-}
+      RabbitMq__HostName: rabbitmq
+      Saga__DatabasePath: /data/billing.db
+    ports:
+      - "127.0.0.1:5080:8080"
+    volumes:
+      - billing-data:/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   rabbitmq:
     image: rabbitmq:4.2.9-management
     hostname: billing-rabbitmq
@@ -18,4 +36,5 @@ services:
       start_period: 15s
 
 volumes:
+  billing-data:
   rabbitmq-data:

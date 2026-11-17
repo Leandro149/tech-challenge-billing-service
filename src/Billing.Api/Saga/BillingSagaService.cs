@@ -76,8 +76,11 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
                 throw Conflict("Reutilize a mesma chave de idempotência e os mesmos dados da aprovação original.");
             if (store.FindKey(key) is { } owner && owner.OrdemServicoUniqueCode != id)
                 throw Conflict("Chave de idempotência já usada em outra OS.");
+            using var scope = scopes.CreateScope();
+            var providers = scope.ServiceProvider.GetRequiredService<PaymentProviders>();
             if (order.PaymentKey is null)
             {
+                order.PaymentProvider = providers.Default;
                 order.PaymentKey = key;
                 order.PayerEmail = payer.PayerEmail;
                 order.PayerFirstName = payer.PayerFirstName;
@@ -86,8 +89,7 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
                 // A chave/payload sobrevivem a timeout ou queda entre POST e resposta.
                 store.Save(order);
             }
-            using var scope = scopes.CreateScope();
-            var provider = scope.ServiceProvider.GetRequiredService<MercadoPagoClient>();
+            var provider = providers.Resolve(ProviderOf(order));
             var payment = order.PaymentId is null
                 ? await CreatePaymentAsync(order, provider, ct)
                 : await provider.GetAsync(order.PaymentId, ct);
@@ -126,7 +128,7 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
                 var candidate = store.Get(id);
                 if (candidate is { PaymentCreationPending: true }) order = candidate;
             }
-            if (order is not null) ApplyPayment(order, payment);
+            if (order is not null && ProviderOf(order) == PaymentOptions.MercadoPago) ApplyPayment(order, payment);
         }
         finally { gate.Release(); }
     }
@@ -175,7 +177,9 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
         store.Save(order, outgoing);
     }
 
-    private static Task<PaymentResponse> CreatePaymentAsync(BillingOrder order, MercadoPagoClient provider, CancellationToken ct) =>
+    private static string ProviderOf(BillingOrder order) => order.PaymentProvider ?? PaymentOptions.MercadoPago;
+
+    private static Task<PaymentResponse> CreatePaymentAsync(BillingOrder order, IPaymentProvider provider, CancellationToken ct) =>
         provider.CreatePixAsync(new CreatePixRequest
         {
             OrderId = order.OrdemServicoUniqueCode.ToString("D"), Amount = order.Amount!.Value,
@@ -193,9 +197,9 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
                 var order = store.Get(candidate.OrdemServicoUniqueCode)!;
                 if (order.CompensationStatus == "manual_review") continue;
                 using var scope = scopes.CreateScope();
-                var provider = scope.ServiceProvider.GetRequiredService<MercadoPagoClient>();
                 try
                 {
+                    var provider = scope.ServiceProvider.GetRequiredService<PaymentProviders>().Resolve(ProviderOf(order));
                     if (order.PaymentCreationPending)
                         ApplyPayment(order, await CreatePaymentAsync(order, provider, ct));
                     if (order.CompensationRequested)
@@ -222,7 +226,7 @@ public sealed class BillingSagaService(BillingSagaStore store, IServiceScopeFact
         }
     }
 
-    private async Task CompensateAsync(BillingOrder order, MercadoPagoClient provider, CancellationToken ct)
+    private async Task CompensateAsync(BillingOrder order, IPaymentProvider provider, CancellationToken ct)
     {
         if (order.CompensationStatus is "refunded" or "cancelled" or "not_applicable") return;
         if (order.PaymentId is null)

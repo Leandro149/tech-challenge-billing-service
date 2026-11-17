@@ -55,6 +55,7 @@ public sealed class PaymentsTests
             Assert.Equal("action_required", payment.Status);
         }
         Assert.Equal(2, factory.Requests);
+        Assert.Empty(factory.Publisher.Events);
     }
 
     [Theory]
@@ -89,6 +90,7 @@ public sealed class PaymentsTests
         var payment = await client.GetFromJsonAsync<PaymentResponse>("/api/payments/ORD123");
         Assert.Equal("processing", payment!.Status);
         Assert.Null(payment.QrCode);
+        Assert.Empty(factory.Publisher.Events);
     }
 
     [Theory]

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Billing.Api.Integrations;
+using Billing.Api.Messaging;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -10,11 +11,13 @@ namespace Billing.Api.Controllers;
 public sealed class MercadoPagoWebhookController(
     MercadoPagoClient mercadoPago,
     IOptions<MercadoPagoOptions> options,
+    IPaymentEventPublisher events,
     ILogger<MercadoPagoWebhookController> logger) : ControllerBase
 {
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Receive(CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(options.Value.WebhookSecret))
@@ -33,8 +36,7 @@ public sealed class MercadoPagoWebhookController(
         if (!Regex.IsMatch(dataId, @"^ORD[a-zA-Z0-9]{1,61}$")) return BadRequest();
 
         var payment = await mercadoPago.GetAsync(dataId, ct);
-        // Esta demonstração não persiste estado nem dispara efeitos de negócio.
-        // Reentregas apenas consultam o estado atual, sem duplicar confirmação de pedido.
+        await events.PublishAsync(PaymentStatusUpdated.From(payment), ct);
         logger.LogInformation("Notificação da order {OrderId}: {Status} / {StatusDetail}",
             payment.Id, payment.Status, payment.StatusDetail);
         return Ok(new { received = true });

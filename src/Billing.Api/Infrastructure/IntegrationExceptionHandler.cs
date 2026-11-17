@@ -1,5 +1,6 @@
 using System.Net;
 using Billing.Api.Integrations;
+using Billing.Api.Messaging;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,6 +12,7 @@ public sealed class IntegrationExceptionHandler(IProblemDetailsService problems)
     {
         var (status, detail) = exception switch
         {
+            MessagingUnavailableException messaging => (503, messaging.Message),
             IntegrationConfigurationException config => (503, config.Message),
             MercadoPagoException { StatusCode: HttpStatusCode.NotFound } => (404, "Cobrança não encontrada no Mercado Pago."),
             MercadoPagoException { StatusCode: HttpStatusCode.BadRequest or HttpStatusCode.UnprocessableEntity } =>

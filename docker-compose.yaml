@@ -1,0 +1,37 @@
+services:
+  billing-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Development"
+      ASPNETCORE_URLS: "http://+:8080"
+
+      RabbitMq__HostName: "rabbitmq"
+      RabbitMq__Port: "5672"
+      RabbitMq__VirtualHost: "/"
+      RabbitMq__UserName: "guest"
+      RabbitMq__Password: "guest"
+      RabbitMq__Exchange: "techchallenge.events"
+      RabbitMq__Queue: "billing.payment-status"
+
+      Saga__Enabled: "true"
+      Saga__Exchange: "techchallenge.events"
+      Saga__Queue: "billing-service.events"
+      Saga__DatabasePath: "/app/.data/billing.db"
+
+    volumes:
+      - billing_data:/app/.data
+
+    networks:
+      - execution_network
+
+networks:
+  execution_network:
+    external: true
+    name: tech-challenge-execution-service_default
+
+volumes:
+  billing_data:

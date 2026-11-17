@@ -22,7 +22,10 @@ builder.Services.AddHostedService<BillingSagaRabbitMqWorker>();
 builder.Services.AddHostedService<BillingSagaReconciliationWorker>();
 builder.Services.AddHttpClient<MercadoPagoClient>(http =>
 {
-    http.BaseAddress = new Uri("https://api.mercadopago.com/");
+    var baseUrl = builder.Configuration["MercadoPago:BaseUrl"]
+        ?? "https://api.mercadopago.com/";
+
+    http.BaseAddress = new Uri(baseUrl);
     http.Timeout = TimeSpan.FromSeconds(10);
 });
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>

@@ -1,5 +1,7 @@
 # TC4-08 — Definição da estratégia de Saga
 
+Registro histórico da proposta original. Para a implementação atual, o contrato posterior exige coreografia; ver [escopo atualizado](choreography.md) e [fluxo implementado](../../../docs/saga-minima.md).
+
 ## Objetivo e entrega
 
 Definir a estratégia para o Épico 2 (OS, orçamento e aprovação) e a participação futura do billing. Documento de decisão: [ADR-0001](../../../docs/architecture/adr-0001-saga-os.md).

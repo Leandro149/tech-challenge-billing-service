@@ -4,9 +4,9 @@ API em C# / ASP.NET Core 10 para integrar o frontend de um trabalho acadêmico a
 
 ## Saga e fluxo distribuído — Épico 2
 
-A **TC4-08 — Definir estratégia do Saga Pattern** está documentada no [ADR-0001](docs/architecture/adr-0001-saga-os.md). A decisão adota uma Saga orquestrada no serviço de OS e define estados, contratos, compensações, correlação com billing, persistência e recuperação. [Requisitos e situação das etapas](.specs/features/saga/spec.md).
+A integração atual usa **Saga coreografada**: consome `os.criada` e `execution.falhou`, publica `billing.aprovado` e `billing.reprovado` na exchange `techchallenge.events`, com contexto/inbox/saída persistidos em SQLite. Aprovação distribuída depende de pagamento confirmado; compensação solicita refund/cancelamento real e aguarda confirmação. [Configuração, testes e limites](docs/saga-minima.md); [requisições HTTP](src/Billing.Api/Billing.Saga.http).
 
-Esta entrega define a arquitetura. O orquestrador e as etapas TC4-09 (criação da OS), TC4-10 (orçamento) e TC4-11 (aprovação) ainda precisam ser implementados nos serviços responsáveis. A API de billing mantém o contrato atual de pagamentos e eventos RabbitMQ.
+O [ADR-0001](docs/architecture/adr-0001-saga-os.md) registra a proposta histórica de orquestração, substituída pelo contrato coreografado da Fase 4. Endpoints de pagamentos, webhook e evento financeiro v1 são preservados.
 
 ## Executar
 
@@ -135,7 +135,7 @@ As origens `http://localhost:3000`, `http://localhost:4200` e `http://localhost:
 
 O Mercado Pago enviará `data.id` e `type=order` na query string, com os headers `x-signature` e `x-request-id`. A API valida HMAC-SHA256 em tempo constante, usa o ID assinado da query para consultar a order, publica o estado atual no RabbitMQ e registra o status no log. Timestamps em segundos e milissegundos são aceitos, com tolerância de cinco minutos; mantenha o relógio do servidor sincronizado. O ID mantém a capitalização recebida, seguindo o SDK .NET oficial.
 
-Notificações sem assinatura válida retornam `401`. Sem segredo configurado, o endpoint retorna `503`. Falhas na consulta ao Mercado Pago ou na publicação no RabbitMQ retornam erro para permitir nova entrega. O `200` com `{"received":true}` só é retornado após a confirmação do broker. Reentregas são aceitas e podem publicar eventos duplicados; consumidores precisam deduplicar pelo `eventId`. Não há confirmação de pedido nem banco neste projeto.
+Notificações sem assinatura válida retornam `401`. Sem segredo configurado, o endpoint retorna `503`. Falhas na consulta ao Mercado Pago ou na publicação no RabbitMQ retornam erro para permitir nova entrega. O `200` com `{"received":true}` só é retornado após a confirmação do broker. Reentregas são aceitas e podem publicar eventos duplicados; consumidores precisam deduplicar pelo `eventId`. O contexto local da Saga é atualizado quando o pagamento está vinculado a uma OS; o serviço de OS recebe o resultado por evento.
 
 O frontend consulta o GET para atualizar a tela. Ele não recebe o webhook diretamente.
 
@@ -206,7 +206,7 @@ Os erros usam ProblemDetails, sem expor o token ou o corpo de erro do provedor:
 | `503` | Configuração ausente, limite de chamadas atingido ou publicação no RabbitMQ não confirmada |
 | `504` | Timeout no Mercado Pago |
 
-Esta API é uma demonstração sem autenticação e sem persistência local. Aceita o valor informado na requisição porque não existe um serviço de pedidos/catálogo neste repositório. Para uso real, o backend deve obter e validar o preço do pedido, autorizar o acesso de cada usuário à cobrança e persistir os efeitos de negócio de forma idempotente. A Public Key e o Access Token não substituem a autenticação dos usuários da sua API.
+Esta API é uma demonstração sem autenticação. O contexto da Saga é persistido localmente em SQLite, com suporte a uma réplica. Aceita o valor informado na requisição porque não existe um serviço de pedidos/catálogo neste repositório. Para uso real, o backend deve obter e validar o preço do pedido, autorizar o acesso de cada usuário à cobrança e persistir os efeitos de negócio de forma idempotente. A Public Key e o Access Token não substituem a autenticação dos usuários da sua API.
 
 ## Verificar
 

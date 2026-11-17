@@ -1,7 +1,7 @@
 # ADR-0001 — Estratégia de Saga para o fluxo de Ordem de Serviço
 
 - Item: **TC4-08 — Definir estratégia do Saga Pattern**.
-- Estado da decisão: definida neste documento; implementação do fluxo pendente.
+- Estado da decisão: histórica, substituída para a integração atual pela [Saga coreografada da Fase 4](../saga-minima.md), conforme contrato posterior do projeto. O restante registra a proposta original.
 - Escopo: orientar TC4-09 (criação da OS), TC4-10 (orçamento) e TC4-11 (aprovação), com integração posterior ao billing.
 
 ## Contexto observado

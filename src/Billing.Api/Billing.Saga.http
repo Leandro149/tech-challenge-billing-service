@@ -1,0 +1,28 @@
+@api = http://localhost:5080
+@os = 6278720e-81c5-465f-8078-f2f623f3a945
+@key = bbe8e427-c975-4fc4-bcce-0620925d733b
+
+### Antes: publicar os.criada via RabbitMQ com o mesmo @os (ver docs/saga-minima.md).
+GET {{api}}/api/billing/ordens/{{os}}
+
+### Gerar orçamento. O valor não muda depois de gerado nesta versão mínima.
+POST {{api}}/api/billing/ordens/{{os}}/orcamento
+Content-Type: application/json
+
+{"amount":50.00}
+
+### Aprovar orçamento e criar/recuperar Pix. Repetir usa a MESMA chave e os MESMOS dados.
+POST {{api}}/api/billing/ordens/{{os}}/aprovar
+Content-Type: application/json
+X-Idempotency-Key: {{key}}
+
+{"payerEmail":"test_payer@example.com","payerFirstName":"APRO"}
+
+### Alternativa à aprovação: rejeitar antes de iniciar pagamento (usar outra OS para testar ambos).
+POST {{api}}/api/billing/ordens/{{os}}/reprovar
+
+### Consultar decisão e status da compensação após execution.falhou.
+GET {{api}}/api/billing/ordens/{{os}}
+
+### Retomar reconciliação após corrigir uma falha que atingiu o limite de tentativas.
+POST {{api}}/api/billing/ordens/{{os}}/reconciliar

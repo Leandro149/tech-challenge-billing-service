@@ -1,6 +1,7 @@
 using Billing.Api.Infrastructure;
 using Billing.Api.Integrations;
 using Billing.Api.Messaging;
+using Billing.Api.Saga;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
@@ -14,6 +15,11 @@ builder.Services.AddOptions<RabbitMqOptions>()
     .ValidateDataAnnotations()
     .ValidateOnStart();
 builder.Services.AddSingleton<IPaymentEventPublisher, RabbitMqPaymentEventPublisher>();
+builder.Services.AddOptions<BillingSagaOptions>().BindConfiguration("Saga").ValidateDataAnnotations().ValidateOnStart();
+builder.Services.AddSingleton<BillingSagaStore>();
+builder.Services.AddSingleton<BillingSagaService>();
+builder.Services.AddHostedService<BillingSagaRabbitMqWorker>();
+builder.Services.AddHostedService<BillingSagaReconciliationWorker>();
 builder.Services.AddHttpClient<MercadoPagoClient>(http =>
 {
     http.BaseAddress = new Uri("https://api.mercadopago.com/");

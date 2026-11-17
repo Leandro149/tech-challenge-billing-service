@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Billing.Api.Integrations;
 using Billing.Api.Messaging;
+using Billing.Api.Saga;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -12,6 +13,7 @@ public sealed class MercadoPagoWebhookController(
     MercadoPagoClient mercadoPago,
     IOptions<MercadoPagoOptions> options,
     IPaymentEventPublisher events,
+    BillingSagaService saga,
     ILogger<MercadoPagoWebhookController> logger) : ControllerBase
 {
     [HttpPost]
@@ -36,6 +38,7 @@ public sealed class MercadoPagoWebhookController(
         if (!Regex.IsMatch(dataId, @"^ORD[a-zA-Z0-9]{1,61}$")) return BadRequest();
 
         var payment = await mercadoPago.GetAsync(dataId, ct);
+        await saga.ObservePaymentAsync(payment, ct);
         await events.PublishAsync(PaymentStatusUpdated.From(payment), ct);
         logger.LogInformation("Notificação da order {OrderId}: {Status} / {StatusDetail}",
             payment.Id, payment.Status, payment.StatusDetail);

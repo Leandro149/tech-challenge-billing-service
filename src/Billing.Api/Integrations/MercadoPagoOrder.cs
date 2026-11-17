@@ -14,6 +14,13 @@ internal sealed class MercadoPagoOrder
 internal sealed class OrderTransactions
 {
     public List<OrderPayment>? Payments { get; init; }
+    public List<OrderRefund>? Refunds { get; init; }
+}
+
+internal sealed class OrderRefund
+{
+    public string Status { get; init; } = "";
+    public string Amount { get; init; } = "";
 }
 
 internal sealed class OrderPayment

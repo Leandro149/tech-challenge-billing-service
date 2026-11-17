@@ -30,6 +30,8 @@ public sealed class BillingFactory : WebApplicationFactory<Program>
     public int Requests { get; private set; }
     public RecordingPublisher Publisher { get; } = new();
     public bool UseRabbitMq { get; init; }
+    public bool SagaEnabled { get; init; }
+    public string? SagaDatabasePath { get; init; }
     public string RabbitMqResource { get; } = $"billing.test.{Guid.NewGuid():N}";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -39,6 +41,11 @@ public sealed class BillingFactory : WebApplicationFactory<Program>
         {
             ["MercadoPago:AccessToken"] = AccessToken,
             ["MercadoPago:WebhookSecret"] = Secret,
+            ["Saga:Enabled"] = SagaEnabled.ToString(),
+            ["Saga:DatabasePath"] = SagaDatabasePath ?? Path.Combine(Path.GetTempPath(), "billing-tests", RabbitMqResource + ".db"),
+            ["Saga:Exchange"] = RabbitMqResource + ".saga",
+            ["Saga:Queue"] = RabbitMqResource + ".saga",
+            ["Saga:PollSeconds"] = "1",
             ["RabbitMq:HostName"] = "localhost",
             ["RabbitMq:Port"] = "5672",
             ["RabbitMq:VirtualHost"] = "/",

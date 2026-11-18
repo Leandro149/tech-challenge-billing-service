@@ -20,6 +20,8 @@ Não cria OS, calcula preços a partir de catálogo, autentica clientes ou execu
 
 ## 2. Arquitetura e estrutura do projeto
 
+O diagrama dos três microsserviços, o fluxo da Saga e as justificativas das escolhas técnicas estão na [documentação da arquitetura final](docs/architecture/arquitetura-final.md).
+
 ```mermaid
 flowchart LR
     OS[OS Service] -->|os.criada| MQ[(RabbitMQ<br/>techchallenge.events)]

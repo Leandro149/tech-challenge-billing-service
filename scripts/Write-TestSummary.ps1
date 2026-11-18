@@ -53,3 +53,6 @@ if ($total -eq 0 -or $executed -ne $total -or $passed -ne $total) {
 }
 if ($coverageFiles.Count -eq 0) { throw "Relatório de cobertura ausente na suíte $Suite." }
 if ($validLines -eq 0 -or $coveredLines -eq 0) { throw "A suíte $Suite não gerou cobertura válida do código da API." }
+if (-not (Get-ChildItem -LiteralPath $ResultsDirectory -Filter 'coverage.opencover.xml' -Recurse -File)) {
+    throw "Relatório OpenCover ausente na suíte $Suite."
+}

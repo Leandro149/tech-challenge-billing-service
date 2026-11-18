@@ -1,239 +1,333 @@
-# Tech Challenge — Billing Service
+# Billing Service — Tech Challenge FIAP PósTech, Fase 4
 
-API em C# / ASP.NET Core 10 para integrar o frontend de um trabalho acadêmico ao Pix do Mercado Pago, usando a Orders API. Este repositório contém apenas o backend.
+Serviço de faturamento em ASP.NET Core responsável por registrar orçamentos vinculados a ordens de serviço, solicitar pagamentos Pix e coordenar decisões e compensações financeiras. Participa de uma Saga coreografada com os serviços de OS e Execution por eventos RabbitMQ.
 
-## Saga e fluxo distribuído — Épico 2
+> **Aviso de configuração:** o `docker-compose.yaml` atualmente versionado contém uma credencial configurada diretamente no ambiente do container. O valor não é reproduzido aqui. Não compartilhe nem use esse Compose como está: revogue/rotacione a credencial e substitua-a por uma configuração de segredo fora do arquivo antes de executar ou publicar uma imagem. A correção do Compose não faz parte desta entrega documental.
 
-A integração atual usa **Saga coreografada**: consome `os.criada` e `execution.falhou`, publica `billing.aprovado` e `billing.reprovado` na exchange `techchallenge.events`, com contexto/inbox/saída persistidos em SQLite. Aprovação distribuída depende de pagamento confirmado; compensação solicita refund/cancelamento real e aguarda confirmação. [Configuração, testes e limites](docs/saga-minima.md); [requisições HTTP](src/Billing.Api/Billing.Saga.http).
+## 1. Visão geral e responsabilidades
 
-O [ADR-0001](docs/architecture/adr-0001-saga-os.md) registra a proposta histórica de orquestração, substituída pelo contrato coreografado da Fase 4. Endpoints de pagamentos, webhook e evento financeiro v1 são preservados.
+O Billing:
 
-## Executar
+- recebe `os.criada` e registra o identificador da OS;
+- gera e persiste um orçamento com valor fornecido à API;
+- inicia uma cobrança Pix e só aprova a Saga depois da confirmação financeira;
+- permite reprovar explicitamente um orçamento ainda sem pagamento iniciado;
+- publica `billing.aprovado` ou `billing.reprovado`;
+- ao receber `execution.falhou`, tenta cancelar um Pix pendente ou estornar um pagamento confirmado, e acompanha a confirmação;
+- mantém o contexto financeiro, a inbox e a outbox em SQLite.
 
-Pré-requisitos: SDK do .NET 10; Docker com suporte a containers Linux e Docker Compose para executar o RabbitMQ local.
+Não cria OS, calcula preços a partir de catálogo, autentica clientes ou executa serviços. A aprovação do orçamento é distinta da aprovação financeira do pagamento.
 
-Na raiz do repositório, configure as credenciais locais de uma **aplicação/conta de teste**:
+## 2. Arquitetura e estrutura do projeto
+
+```mermaid
+flowchart LR
+    OS[OS Service] -->|os.criada| MQ[(RabbitMQ<br/>techchallenge.events)]
+    EX[Execution Service] -->|execution.falhou| MQ
+    MQ --> WORKER[Billing Saga Worker]
+    WORKER --> SQLITE[(SQLite<br/>contexto + inbox + outbox)]
+    API[Billing API / Swagger] --> SAGA[BillingSagaService]
+    SAGA --> SQLITE
+    SAGA --> PROVIDER{Provedor selecionado}
+    PROVIDER --> MP[Mercado Pago Orders API]
+    PROVIDER --> FAKE[Fake local]
+    MP -->|webhook assinado / consulta| API
+    SAGA -->|billing.aprovado / billing.reprovado| MQ
+    API -->|payment.status.updated.v1| FIN[Exchange billing.events]
+```
+
+Estrutura principal:
+
+| Caminho | Responsabilidade |
+| --- | --- |
+| `src/Billing.Api/Controllers/` | Endpoints de orçamento, pagamentos e webhook. |
+| `src/Billing.Api/Saga/` | Contratos, regras, workers RabbitMQ e store SQLite da Saga. |
+| `src/Billing.Api/Integrations/` | Cliente Mercado Pago, Fake e validação da assinatura do webhook. |
+| `src/Billing.Api/Messaging/` | Evento financeiro v1 e publicador RabbitMQ. |
+| `src/Billing.Api/Infrastructure/` | Tratamento de erros de integração. |
+| `tests/Billing.Api.Tests/` | Testes de API, Saga, Fake, webhook e RabbitMQ. |
+| `docs/saga-minima.md` | Roteiro e configuração detalhados da coreografia. |
+| `docs/architecture/adr-0001-saga-os.md` | Decisão histórica de orquestração, substituída pela coreografia atual. |
+
+O Billing persiste seu próprio estado. Os outros serviços não acessam diretamente seu banco.
+
+## 3. Tecnologias utilizadas
+
+- .NET 10 / C# e ASP.NET Core Web API;
+- SQLite (`Microsoft.Data.Sqlite`) para estado durável local;
+- RabbitMQ (`RabbitMQ.Client`) para consumo e publicação de eventos;
+- Mercado Pago Orders API para cobrança Pix, consulta, cancelamento e estorno;
+- provedor Fake, isolado para `Development` e `Testing`;
+- Swagger/Swashbuckle, Docker e Docker Compose;
+- xUnit e `Microsoft.AspNetCore.Mvc.Testing` para testes.
+
+## 4. Pré-requisitos
+
+- SDK .NET 10 (o `global.json` fixa `10.0.100` e aceita atualizações de feature);
+- Docker com suporte a containers Linux para a imagem ASP.NET;
+- RabbitMQ acessível pela API para executar a Saga e publicar o evento financeiro;
+- credenciais próprias de aplicação/conta de teste do Mercado Pago para testar a integração real;
+- PowerShell nos exemplos abaixo.
+
+## 5. Configuração das variáveis de ambiente
+
+O ASP.NET Core aceita variáveis de ambiente com `__` como separador de seção. Em desenvolvimento, prefira User Secrets; `scripts\Set-LocalSecrets.ps1` solicita o token com entrada oculta e permite configurar o segredo do webhook. User Secrets ficam fora do repositório, mas não são um cofre criptografado.
+
+| Configuração | Variável | Padrão / uso |
+| --- | --- | --- |
+| Provedor | `Payment__Provider` | `MercadoPago`; use `Fake` somente em `Development` ou `Testing`. |
+| Access Token | `MercadoPago__AccessToken` | Obrigatório para chamadas ao Mercado Pago. |
+| Segredo do webhook | `MercadoPago__WebhookSecret` | Obrigatório para aceitar notificações assinadas. |
+| URL base do provedor | `MercadoPago__BaseUrl` | Opcional; por padrão `https://api.mercadopago.com/`. |
+| RabbitMQ | `RabbitMq__HostName`, `RabbitMq__Port`, `RabbitMq__VirtualHost`, `RabbitMq__UserName`, `RabbitMq__Password` | Por padrão, conexão local em `localhost:5672`. |
+| Publicação financeira | `RabbitMq__Exchange`, `RabbitMq__Queue`, `RabbitMq__PublishTimeoutSeconds` | Padrões: `billing.events`, `billing.payment-status`, 5 segundos. |
+| Saga | `Saga__Enabled`, `Saga__Exchange`, `Saga__Queue` | Padrões: `true`, `techchallenge.events`, `billing-service.events`. |
+| SQLite e polling | `Saga__DatabasePath`, `Saga__PollSeconds`, `Saga__MaxFailures` | Padrões: `.data/billing.db`, 5 segundos e 10 falhas. |
+| CORS | `Cors__AllowedOrigins__0` (e índices seguintes) | `appsettings.json` libera localhost nas portas 3000, 4200 e 5173. |
+| Ambiente ASP.NET | `ASPNETCORE_ENVIRONMENT` | Swagger e Fake ficam disponíveis em `Development`; Fake também em `Testing`. |
+
+Exemplo de configuração local sem expor o segredo no comando:
 
 ```powershell
-docker compose up -d --wait
 .\scripts\Set-LocalSecrets.ps1
-dotnet run --project src/Billing.Api --launch-profile http
+$env:Payment__Provider = 'MercadoPago'
 ```
 
-O script pede o Access Token com entrada oculta e salva em .NET User Secrets, fora do repositório. A assinatura do webhook é opcional até você configurar as notificações. User Secrets é uma configuração local de desenvolvimento, não um cofre criptografado.
+Não grave tokens, segredo de webhook ou senha real em `appsettings*.json`, README, Git ou frontend. Um arquivo `.env` não é carregado automaticamente pelo ASP.NET Core.
 
-- API: http://localhost:5080
-- Swagger: http://localhost:5080/swagger
-- Health: http://localhost:5080/health (verifica a API, não a credencial do Mercado Pago nem a conexão com RabbitMQ)
-- Painel RabbitMQ: http://localhost:15672 (usuário `billing`, senha local de demonstração `billing-local`)
+## 6. Execução local e com Docker Compose
 
-Alternativamente, configure User Secrets diretamente (substitua os placeholders localmente):
+### Execução local
+
+Configure User Secrets e disponibilize um RabbitMQ que a aplicação consiga acessar. O processo da API pode iniciar sem broker, mas os workers da Saga tentarão reconectar; eventos e webhooks dependentes de publicação não serão concluídos enquanto o broker estiver indisponível.
 
 ```powershell
-dotnet user-secrets set "MercadoPago:AccessToken" "SEU_ACCESS_TOKEN_DE_TESTE" --project src/Billing.Api
-dotnet user-secrets set "MercadoPago:WebhookSecret" "SUA_ASSINATURA_SECRETA" --project src/Billing.Api
+dotnet restore .\TechChallenge.BillingService.slnx
+dotnet run --project .\src\Billing.Api\Billing.Api.csproj --launch-profile http
 ```
 
-Também são aceitas as variáveis `MercadoPago__AccessToken` e `MercadoPago__WebhookSecret`. Arquivos `.env` não são carregados automaticamente. Não coloque tokens no `appsettings.json`, frontend ou Git. A Public Key não é necessária para este fluxo de criação de Pix pelo backend.
+O perfil `http` inicia em `http://localhost:5080` com ambiente `Development`. Para desenvolvimento sem credenciais do Mercado Pago, consulte [Provedor Fake](#10-provedor-fake-para-desenvolvimento-e-testes).
 
-**Ambiente de teste:** a Orders API usa a mesma URL `https://api.mercadopago.com` nos testes; o ambiente depende da aplicação/conta e da credencial configurada. O prefixo `APP_USR` sozinho não distingue teste de produção. Não use um token da conta recebedora real para esta demonstração. Nenhuma credencial compartilhada na conversa foi incorporada ao código ou à configuração local.
+### Docker Compose deste repositório
 
-## Contrato com o frontend
+O `docker-compose.yaml` da raiz inicia apenas o container da API; não define um serviço RabbitMQ. Ele publica a API em `http://localhost:8082`, espera encontrar o broker pelo hostname `rabbitmq` e depende da rede Docker externa `tech-challenge-execution-service_default`. Portanto, não é uma composição autônoma: a rede e o broker precisam existir e ser acessíveis antes da inicialização.
 
-| Método e rota | Função |
+Depois de corrigir a credencial inline mencionada no aviso inicial e de preparar a rede e o broker:
+
+```powershell
+docker compose up -d --build
+docker compose logs -f billing-api
+```
+
+O Compose monta o volume `billing_data` para o SQLite em `/app/.data`. O Dockerfile publica a aplicação na porta interna 8080. O Compose atual não declara healthcheck, não configura o RabbitMQ e não deve ser considerado pronto para produção.
+
+## 7. Swagger e endpoints REST
+
+Swagger UI é habilitado somente em `Development`: `http://localhost:5080/swagger` localmente (no Compose, porta host 8082). O endpoint `GET /health` apenas retorna `{"status":"healthy"}`; não verifica RabbitMQ, SQLite ou credenciais externas.
+
+| Método | Rota | Uso |
+| --- | --- | --- |
+| `GET` | `/health` | Health simples da aplicação. |
+| `POST` | `/api/payments/pix` | Criação de Pix pelo provedor configurado; exige `X-Idempotency-Key`. |
+| `GET` | `/api/payments/{orderId}` | Consulta pelo ID da order retornado pelo provedor (`ORD...`). |
+| `POST` | `/api/webhooks/mercado-pago` | Recebe webhook assinado de Orders do Mercado Pago. |
+| `GET` | `/api/billing/ordens/{ordemServicoUniqueCode}` | Consulta o estado local da Saga; a OS precisa ter sido registrada por `os.criada`. |
+| `POST` | `/api/billing/ordens/{ordemServicoUniqueCode}/orcamento` | Gera orçamento com `{"amount": 50.00}`. |
+| `POST` | `/api/billing/ordens/{ordemServicoUniqueCode}/aprovar` | Inicia ou retoma pagamento; exige dados do pagador e `X-Idempotency-Key`. |
+| `POST` | `/api/billing/ordens/{ordemServicoUniqueCode}/reprovar` | Reprova explicitamente orçamento ainda sem pagamento iniciado. |
+| `POST` | `/api/billing/ordens/{ordemServicoUniqueCode}/reconciliar` | Retoma reconciliação suspensa; responde `202 Accepted`. |
+
+Os endpoints de pagamento Pix independentes da Saga são mantidos por compatibilidade. O GET de uma OS retorna `decision`, `amount`, `paymentId`, `compensationRequested`, `compensationStatus` e `lastError`.
+
+## 8. Geração e aprovação de orçamentos
+
+`os.criada` deve ser consumido antes das operações de orçamento. O valor precisa ser positivo, ter no máximo duas casas decimais e não exceder `999999999.99`. O orçamento é imutável: repetir o mesmo valor é idempotente; enviar outro valor retorna conflito. Este repositório não calcula preço por catálogo nem valida preço em outro serviço.
+
+Exemplo após registrar uma OS válida:
+
+```powershell
+$os = '6278720e-81c5-465f-8078-f2f623f3a945'
+$base = 'http://localhost:5080'
+Invoke-RestMethod -Method Post `
+  -Uri "$base/api/billing/ordens/$os/orcamento" `
+  -ContentType 'application/json' `
+  -Body '{"amount":50.00}'
+```
+
+A aprovação exige um orçamento já gerado, e associa uma chave de idempotência ao payload (email e nome do pagador). Repetir exige a mesma chave e os mesmos dados. Não use outra chave para repetir uma operação cujo resultado ainda seja incerto.
+
+## 9. Integração real com Mercado Pago
+
+`MercadoPagoClient` chama a Orders API com Bearer Access Token. Cria order online/automática com método Pix, valor e `external_reference` apontando para a OS. A criação e as retentativas usam `X-Idempotency-Key`. O ID da cobrança é o `ORD...` retornado pelo provedor, não o identificador da OS.
+
+O pagamento pode começar como `action_required`/`waiting_transfer`; isso não é confirmação. A Saga considera aprovado somente o estado consultado `processed`/`accredited`. A API aceita webhooks de Orders com assinatura HMAC validada, busca o ID assinado na Orders API e usa o estado consultado, não o corpo não assinado. Configure HTTPS público e o segredo do webhook no painel do Mercado Pago para testar esse caminho.
+
+Os testes automatizados simulam respostas HTTP e não criam pagamentos externos. Use credenciais e pagadores de teste próprios para validar a integração real. O prefixo do token não é suficiente para concluir se a conta está em ambiente de teste ou produção.
+
+### Rejeições e limites da API
+
+Respostas HTTP 400 ou 422 do Mercado Pago são mapeadas para 422 no Billing, com detalhe genérico; o conteúdo sensível da resposta não é enviado ao cliente. Em operações de compensação, uma rejeição 422 não significa que houve estorno: o estado continua pendente, será reconciliado e pode chegar a `manual_review`. A API só marca estorno concluído após consultar uma order que confirme todos os refunds processados e o valor integral. Um `2xx` do pedido de estorno, por si só, não é confirmação financeira.
+
+## 10. Provedor Fake para desenvolvimento e testes
+
+Configure `Payment:Provider=Fake` apenas em `Development` ou `Testing`; em outros ambientes a aplicação recusa iniciar. O Fake grava cobranças na tabela local `fake_payments`, usa ID `ORD-FAKE-...`, aprova imediatamente (`processed`/`accredited`) e não cria QR Code ou cobrança externa.
+
+```powershell
+$env:Payment__Provider = 'Fake'
+dotnet run --project .\src\Billing.Api\Billing.Api.csproj --launch-profile http
+```
+
+No Fake, a mesma chave e payload retornam a mesma cobrança; reutilizar a chave com payload diferente conflita. A compensação Fake conclui um estorno **somente no banco Fake/SQLite**. Não chama o Mercado Pago, não representa estorno real e não deve ser apresentado como tal. Cancelamento Fake não é suportado porque os pagamentos são aprovados imediatamente; para essa implementação a compensação é estorno Fake.
+
+O provedor é selecionado e persistido na primeira aprovação de cada OS. Registros antigos sem provedor gravado são tratados como Mercado Pago; trocar a configuração global não converte pagamentos antigos para Fake.
+
+## 11. Persistência SQLite
+
+`Saga:DatabasePath` seleciona um arquivo SQLite (padrão `.data/billing.db`, relativo ao content root). O store ativa WAL e cria as tabelas `billing_orders`, `billing_inbox` e `billing_outbox`; quando o Fake é inicializado, também cria `fake_payments`. O contexto e os dados necessários para retomar uma criação ou compensação sobrevivem a reinícios.
+
+Mantenha o arquivo em armazenamento persistente e faça backup de acordo com o ambiente. A implementação mínima suporta uma réplica e usa sincronização em processo; não compartilhe o mesmo arquivo como mecanismo de coordenação entre réplicas.
+
+## 12. Eventos RabbitMQ consumidos e publicados
+
+### Eventos da coreografia
+
+Exchange topic durável, configurada por `Saga:Exchange` (padrão `techchallenge.events`); fila própria durável, `Saga:Queue` (padrão `billing-service.events`).
+
+| Direção | Routing key | Efeito |
+| --- | --- | --- |
+| Consumido | `os.criada` | Registra a OS sem apagar orçamento ou decisão existente. |
+| Consumido | `execution.falhou` | Registra pedido de compensação e agenda reconciliação. |
+| Publicado | `billing.aprovado` | Apenas após confirmação de pagamento correspondente à OS e ao valor. |
+| Publicado | `billing.reprovado` | Somente após reprovação explícita antes de iniciar pagamento. |
+
+Os eventos de Saga usam JSON camelCase com `eventId` (Guid), `ordemServicoUniqueCode` (Guid) e `occurredAt` (UTC). A fila de entrada tem dead-letter exchange `<Saga:Exchange>.errors` e fila `<Saga:Queue>.error`; mensagens inválidas ou conflitantes recebem NACK sem requeue e vão para a DLQ.
+
+### Evento financeiro legado
+
+O webhook também publica `payment.status.updated.v1` na exchange `billing.events`, routing key `payment.status.updated.v1`, fila `billing.payment-status` (configuráveis pela seção `RabbitMq`). Contém `eventId`, `observedAt`, `paymentId`, `orderId`, `amount`, `status` e `statusDetail`; não inclui dados do pagador nem conteúdo Pix. Este contrato é separado dos eventos da Saga.
+
+Os dois publicadores exigem publisher confirms e mensagem roteável. A outbox da Saga é despachada pelo worker; o evento financeiro legado é publicado durante o processamento do webhook e a resposta de sucesso só ocorre após confirmação do broker.
+
+## 13. Participação na Saga coreografada
+
+O Billing é um participante, não um orquestrador central. A OS Service publica `os.criada`; o Billing registra o contexto e disponibiliza operações de orçamento. Após o pagamento confirmado, publica `billing.aprovado` para o fluxo de execução. `execution.falhou` solicita compensação. O contrato atual não publica evento de compensação concluída.
+
+O ADR-0001 descreve uma proposta histórica de orquestração. Para a integração implementada, consulte o contrato atualizado em [docs/saga-minima.md](docs/saga-minima.md).
+
+## 14. Fluxo de aprovação de pagamento
+
+1. A OS é registrada pela mensagem `os.criada`.
+2. Um orçamento válido é gerado.
+3. `POST .../aprovar` persiste provedor, chave e dados necessários antes da chamada externa.
+4. O Billing cria ou recupera a cobrança com a mesma chave.
+5. Se o provedor ainda indicar estado pendente, nenhum `billing.aprovado` é publicado. Webhook e worker de reconciliação consultam o estado mais recente.
+6. Ao verificar `processed`/`accredited` para a mesma OS e o valor do orçamento, o Billing salva a decisão e a mensagem outbox `billing.aprovado`.
+7. O worker publica com confirmação do broker e então marca o evento como enviado.
+
+```text
+os.criada → orçamento → pagamento confirmado → billing.aprovado → Execution
+```
+
+Com Fake, o pagamento é aprovado imediatamente e não há operação externa. Com Mercado Pago, o fluxo aguarda confirmação consultada.
+
+## 15. Fluxo de reprovação
+
+`POST .../reprovar` registra a decisão e persiste `billing.reprovado` na outbox, sem chamar provedor. Repetir a reprovação é idempotente. Não é permitida depois de iniciar pagamento ou quando há compensação pendente. Erro de rede, timeout, credencial recusada ou rejeição de pagamento pelo provedor não equivale a reprovação explícita de orçamento e não publica esse evento.
+
+## 16. Fluxo de compensação financeira
+
+Ao receber `execution.falhou`, o Billing persiste o pedido. A reconciliação consulta a situação financeira:
+
+- se a cobrança ainda não foi conhecida e uma criação está pendente, tenta recuperar a criação com a chave original;
+- se não houve operação de pagamento, encerra como `not_applicable`;
+- se o pagamento foi aprovado e creditado, solicita estorno integral;
+- se o Pix ainda está em `action_required`, solicita cancelamento;
+- se já há refund em processamento ou o estado não permite uma decisão segura, mantém pendente e consulta novamente;
+- conclui como `refunded` ou `cancelled` somente após confirmar o estado consultado.
+
+```text
+execution.falhou → solicitação persistida → consulta financeira
+    → refund/cancel → consulta de confirmação → estado financeiro atualizado
+```
+
+O refund do Mercado Pago é uma operação real de Orders API. A compensação Fake altera apenas a cobrança Fake persistida localmente; os resultados não são equivalentes.
+
+## 17. Idempotência, Inbox, Outbox e reconciliação
+
+- **Aprovação/pagamento:** chave e dados do pagador ficam persistidos antes da chamada externa. Timeout retoma a mesma operação; chave usada em outra OS ou com dados diferentes conflita.
+- **Inbox:** `eventId` e fingerprint do evento de entrada são gravados na mesma transação que o contexto antes do ACK. Duplicata idêntica é ignorada; o mesmo ID com conteúdo diferente é conflito.
+- **Outbox:** alterações de contexto e evento de saída são persistidas atomicamente. Worker publica mensagens persistentes com `mandatory=true` e confirmações; só marca como enviada depois do ACK do broker.
+- **Duplicatas de saída:** queda após confirmação do broker e antes de marcar como enviada pode republicar. Consumidores devem deduplicar persistentemente.
+- **Webhook financeiro:** `eventId` é estável para a combinação de tipo, pagamento, status e detalhe. Reentregas podem publicar duplicatas; não há garantia de ordenação nem histórico completo de transições.
+- **Reconciliação:** worker retoma criações, consultas e compensações pendentes após reinício, sem criar uma nova chave de operação.
+
+## 18. Tratamento de erros, retentativas e revisão manual
+
+Respostas de integração usam Problem Details e não devolvem o token nem o corpo bruto de erro do provedor.
+
+| HTTP | Significado usual |
 | --- | --- |
-| `POST /api/payments/pix` | Cria uma order com pagamento Pix |
-| `GET /api/payments/{orderId}` | Consulta a order atual no Mercado Pago |
-| `POST /api/webhooks/mercado-pago` | Recebe notificações assinadas de Orders |
+| `400` | Entrada, identificador ou chave inválida. |
+| `401` | Assinatura do webhook inválida. |
+| `404` | OS ainda não registrada ou cobrança não encontrada. |
+| `409` | Estado incompatível, valor divergente ou conflito de idempotência. |
+| `422` | Dados recusados pelo Mercado Pago (HTTP 400/422 do provedor). |
+| `502` | Falha de comunicação, credencial/permissão recusada ou resposta inválida do provedor. |
+| `503` | Configuração ausente, limite de chamadas ou publicação RabbitMQ não confirmada. |
+| `504` | Timeout do provedor. Reutilize a chave original. |
 
-Para criar uma cobrança, envie o header `X-Idempotency-Key` com um UUID. Guarde e reutilize a mesma chave e os mesmos dados se houver timeout ou se você repetir a operação. Uma nova chave representa uma nova tentativa de cobrança; não gere outra automaticamente após uma resposta incerta.
+Os workers de Saga fazem polling conforme `Saga:PollSeconds` e usam espera exponencial nas falhas, limitada a 300 segundos. Após `Saga:MaxFailures` (padrão 10), o estado passa a `manual_review` e deixa de ser processado automaticamente. `lastError` registra a categoria da exceção, não o texto bruto. Corrija a causa e invoque `POST .../reconciliar` para reiniciar a contagem e retomar a operação existente.
 
-```http
-POST /api/payments/pix
-Content-Type: application/json
-X-Idempotency-Key: 5c99517b-47ee-4654-8c1e-8bd9c5151250
+Mensagens de entrada inválidas vão para DLQ, não entram em ciclo de requeue imediato. Falha de publicação do webhook retorna erro para permitir reentrega; confirmações RabbitMQ perdidas ainda podem causar duplicatas.
 
-{
-  "orderId": "pedido-123",
-  "amount": 50.00,
-  "payerEmail": "test_payer@example.com",
-  "payerFirstName": "APRO"
-}
-```
+## 19. Testes automatizados e cobertura
 
-`orderId` é o ID do pedido no seu sistema, com até 64 letras, números, hífens ou sublinhados. O valor deve ser positivo, ter até duas casas decimais e não ultrapassar `999999999.99`. `payerFirstName` é opcional. No cenário oficial de teste Pix, o nome `APRO` provoca a aprovação automática posterior; não deve ser fixado como nome de um comprador real.
-
-Resposta `201 Created` (valores ilustrativos):
-
-```json
-{
-  "id": "ORD01HRYFWNYRE1MR1E60MW3X0T2P",
-  "orderId": "pedido-123",
-  "amount": 50.00,
-  "status": "action_required",
-  "statusDetail": "waiting_transfer",
-  "qrCode": "PIX_COPIA_E_COLA_RETORNADO_PELO_PROVEDOR",
-  "qrCodeBase64": "IMAGEM_BASE64_RETORNADA_PELO_PROVEDOR",
-  "ticketUrl": "https://www.mercadopago.com.br/..."
-}
-```
-
-`id` é o identificador `ORD...` do Mercado Pago. Use esse valor no GET, e não o ID do pedido do seu sistema. O GET devolve o mesmo contrato, com o estado atualizado. A criação pode ser assíncrona: os campos Pix podem estar `null` enquanto a order está sendo processada. Nesse caso, consulte novamente após alguns segundos.
-
-No frontend, mostre `qrCode` como Pix Copia e Cola, `qrCodeBase64` em uma imagem e/ou `ticketUrl` como link. A geração do QR Code não confirma pagamento. Para este fluxo Pix, `processed` com `statusDetail: accredited` representa a confirmação; `action_required`/`waiting_transfer` representa aguardar pagamento. Preserve e trate os demais estados retornados pelo provedor, inclusive cancelamento e reembolso.
-
-Exemplo JavaScript independente de framework:
-
-```javascript
-const api = "http://localhost:5080";
-
-// Crie e guarde esta chave ao iniciar a operação, antes da primeira chamada.
-// Reutilize a mesma chave e payload ao repetir essa operação.
-const idempotencyKey = crypto.randomUUID();
-const payload = {
-  orderId: "pedido-123",
-  amount: 50.00,
-  payerEmail: "test_payer@example.com",
-  payerFirstName: "APRO" // apenas para a simulação oficial de teste
-};
-
-async function createPix() {
-  const response = await fetch(`${api}/api/payments/pix`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": idempotencyKey
-    },
-    body: JSON.stringify(payload)
-  });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail ?? body.title ?? "Falha ao criar Pix");
-  return body;
-}
-
-async function getPayment(mercadoPagoOrderId) {
-  const response = await fetch(`${api}/api/payments/${encodeURIComponent(mercadoPagoOrderId)}`);
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.detail ?? body.title ?? "Falha ao consultar Pix");
-  return body;
-}
-
-// const payment = await createPix();
-// Copia e cola: payment.qrCode
-// Imagem PNG: `data:image/png;base64,${payment.qrCodeBase64}`
-// Consulta posterior: await getPayment(payment.id)
-```
-
-As origens `http://localhost:3000`, `http://localhost:4200` e `http://localhost:5173` estão liberadas no CORS. Edite `Cors:AllowedOrigins` em `src/Billing.Api/appsettings.json` se seu frontend usar outra origem, incluindo protocolo e porta. CORS não autentica o usuário.
-
-## Webhook
-
-1. Exponha a API por uma URL HTTPS pública, por exemplo usando um túnel durante o desenvolvimento. O Mercado Pago não acessa `localhost` diretamente.
-2. No painel da aplicação, configure Webhooks para o ambiente de teste, habilitando o tópico **Orders**.
-3. Cadastre `https://SEU_HOST/api/webhooks/mercado-pago`.
-4. Copie a assinatura secreta para `MercadoPago:WebhookSecret` nos User Secrets e reinicie a API.
-
-O Mercado Pago enviará `data.id` e `type=order` na query string, com os headers `x-signature` e `x-request-id`. A API valida HMAC-SHA256 em tempo constante, usa o ID assinado da query para consultar a order, publica o estado atual no RabbitMQ e registra o status no log. Timestamps em segundos e milissegundos são aceitos, com tolerância de cinco minutos; mantenha o relógio do servidor sincronizado. O ID mantém a capitalização recebida, seguindo o SDK .NET oficial.
-
-Notificações sem assinatura válida retornam `401`. Sem segredo configurado, o endpoint retorna `503`. Falhas na consulta ao Mercado Pago ou na publicação no RabbitMQ retornam erro para permitir nova entrega. O `200` com `{"received":true}` só é retornado após a confirmação do broker. Reentregas são aceitas e podem publicar eventos duplicados; consumidores precisam deduplicar pelo `eventId`. O contexto local da Saga é atualizado quando o pagamento está vinculado a uma OS; o serviço de OS recebe o resultado por evento.
-
-O frontend consulta o GET para atualizar a tela. Ele não recebe o webhook diretamente.
-
-## RabbitMQ
-
-O fluxo implementado é: webhook assinado → consulta à Orders API → publicação do estado atual → confirmação do broker → HTTP `200`. POST de criação de Pix e GET de consulta não publicam eventos. Um consumidor em outro serviço pode usar o evento para atualizar um pedido; este repositório implementa o publicador.
-
-Inicie o broker e depois a API:
+Execute os testes automatizados sem dependência de credenciais do Mercado Pago:
 
 ```powershell
-docker compose up -d --wait
-dotnet run --project src/Billing.Api --launch-profile http
+dotnet build .\TechChallenge.BillingService.slnx
+dotnet test .\TechChallenge.BillingService.slnx
 ```
 
-O Compose usa a [imagem oficial do RabbitMQ](https://hub.docker.com/_/rabbitmq), volume persistente e portas publicadas apenas em `127.0.0.1`. As credenciais `billing` / `billing-local` são exemplos para desenvolvimento local. Para outro broker, configure `RabbitMq:HostName`, `RabbitMq:Port`, `RabbitMq:VirtualHost`, `RabbitMq:UserName` e `RabbitMq:Password` via User Secrets ou variáveis de ambiente, como `RabbitMq__Password`; não versione credenciais reais. Esta configuração local usa AMQP sem TLS.
-
-| Recurso | Valor padrão |
-| --- | --- |
-| AMQP | `localhost:5672` |
-| Painel | http://localhost:15672 |
-| Exchange topic durável | `billing.events` |
-| Routing key e tipo AMQP | `payment.status.updated.v1` |
-| Fila durável | `billing.payment-status` |
-| Timeout da publicação | `RabbitMq:PublishTimeoutSeconds` = `5` |
-
-Exchange e fila são configuráveis por `RabbitMq:Exchange` e `RabbitMq:Queue`. A conexão é aberta e os recursos são declarados no primeiro webhook válido que consiga consultar a order. Portanto, a fila pode ainda não aparecer no painel logo após iniciar a API. A API pode iniciar sem o broker, mas um webhook de Order não será aceito com sucesso enquanto a publicação falhar. O cliente pode levar alguns segundos adicionais para encerrar uma conexão que deixou de responder após o timeout.
-
-Cada publicação contém JSON em camelCase, com as propriedades AMQP `ContentType=application/json`, mensagem persistente, `Type=payment.status.updated.v1` e `MessageId` igual ao `eventId`:
-
-```json
-{
-  "eventId": "<sha256-da-combinacao-tipo-paymentId-status-statusDetail>",
-  "observedAt": "2026-11-16T15:00:00+00:00",
-  "paymentId": "ORD123",
-  "orderId": "pedido-123",
-  "amount": 50.00,
-  "status": "processed",
-  "statusDetail": "accredited"
-}
-```
-
-`paymentId` identifica a order no Mercado Pago; `orderId` é a referência do pedido no seu sistema e pode ser `null`. O evento informa o estado consultado, inclusive estados de espera, cancelamento ou reembolso. `observedAt` é o momento da observação pela API, não a data da transição no provedor. Dados do pagador, token e conteúdo Pix não são publicados.
-
-As mensagens usam [publisher confirms](https://www.rabbitmq.com/tutorials/tutorial-seven-dotnet) e `mandatory=true`: rejeição pelo broker, mensagem sem rota ou timeout resultam em `503`. A próxima tentativa recria conexão/canal e declara novamente a topologia após uma falha. Não existe outbox ou fila de retentativas em memória: a recuperação depende da reentrega do webhook pelo Mercado Pago.
-
-O mesmo `paymentId`/`status`/`statusDetail` gera o mesmo `eventId`, mesmo em entregas diferentes. O consumidor deve persistir a deduplicação junto com os efeitos de negócio e só enviar o ACK após concluir o processamento. Duplicatas são possíveis, inclusive se o broker aceitou a mensagem mas a confirmação se perdeu. Não há garantia de entrega exatamente uma vez, ordenação das transições ou histórico completo; notificações concorrentes podem observar estados diferentes. Para evitar regressão de status no serviço consumidor, reconcilie estados conflitantes com a fonte de verdade.
-
-Para conferir manualmente, crie um Pix de teste pelo Swagger, usando credencial de teste, e receba ou simule no Mercado Pago uma notificação com o ID `ORD...` existente. Depois, no painel RabbitMQ, abra **Queues and Streams → billing.payment-status → Get messages**, usando requeue para manter a mensagem disponível. Consultar a URL do webhook no navegador envia GET e não testa esse fluxo POST assinado.
-
-Para encerrar o broker preservando as mensagens no volume:
+Os testes cobrem validação de payload, endpoints de pagamentos, idempotência, assinatura e repetição de webhook, CORS, eventos, estados da Saga, Inbox/Outbox, persistência após reinício, compensações, Fake, erros e recuperação. A integração HTTP com Mercado Pago é simulada. Testes que usam broker real são ignorados por padrão; exigem RabbitMQ disponível com a configuração esperada:
 
 ```powershell
-docker compose down
-```
-
-## Erros e limites da demonstração
-
-Os erros usam ProblemDetails, sem expor o token ou o corpo de erro do provedor:
-
-| HTTP | Significado |
-| --- | --- |
-| `400` | Dados de entrada ou chave de idempotência inválidos |
-| `401` | Assinatura do webhook inválida |
-| `404` | Order não encontrada |
-| `409` | Conflito na operação |
-| `422` | Dados recusados pelo Mercado Pago |
-| `502` | Falha de comunicação, credencial recusada ou resposta inválida do provedor |
-| `503` | Configuração ausente, limite de chamadas atingido ou publicação no RabbitMQ não confirmada |
-| `504` | Timeout no Mercado Pago |
-
-Esta API é uma demonstração sem autenticação. O contexto da Saga é persistido localmente em SQLite, com suporte a uma réplica. Aceita o valor informado na requisição porque não existe um serviço de pedidos/catálogo neste repositório. Para uso real, o backend deve obter e validar o preço do pedido, autorizar o acesso de cada usuário à cobrança e persistir os efeitos de negócio de forma idempotente. A Public Key e o Access Token não substituem a autenticação dos usuários da sua API.
-
-## Verificar
-
-```powershell
-dotnet build
-dotnet test
-```
-
-Por padrão, os testes usam um servidor HTTP de teste, um provedor e um publicador simulados. Também verificam o timeout do cliente real contra um servidor TCP que não responde ao AMQP. Cobrem contratos de criação/consulta, validação de entrada, idempotência enviada ao provedor, erros, CORS, assinatura/reentrega de webhook, conteúdo do evento e confirmação da publicação antes da resposta HTTP; não criam cobranças externas. O arquivo `src/Billing.Api/Billing.Api.http` contém requisições para execução manual com uma credencial de teste configurada.
-
-Dois testes com RabbitMQ real ficam explicitamente ignorados até habilitá-los. Com o Compose saudável e as credenciais locais padrão, execute no PowerShell:
-
-```powershell
-$env:BILLING_TEST_RABBITMQ = "true"
+$env:BILLING_TEST_RABBITMQ = 'true'
 try {
-    dotnet test
+    dotnet test .\TechChallenge.BillingService.slnx
 } finally {
     Remove-Item Env:BILLING_TEST_RABBITMQ -ErrorAction SilentlyContinue
 }
 ```
 
-Esses testes comprovam a entrega de webhook assinado até a fila, propriedades de persistência, payload, publicação concorrente, falha por falta de binding e recuperação. Usam recursos temporários exclusivos e removem apenas esses recursos; não consomem mensagens da fila de negócio. O provedor de pagamento permanece simulado.
+O estado registrado do projeto relata 63 testes aprovados na validação da Fase 4, incluindo 3 testes opt-in com RabbitMQ real. Há dependência Coverlet no projeto de testes, mas não foi encontrado relatório atual de cobertura nem limite configurado; portanto, não há evidência para declarar uma porcentagem ou meta de 80%.
 
-## Documentação oficial
+## 20. CI/CD com GitHub Actions
 
-- [Criar order](https://www.mercadopago.com.br/developers/pt/reference/online-payments/checkout-api/create-order/post)
-- [Integração Pix](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/payment-integration/websites/pix)
-- [Teste Pix com APRO](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/integration-test/pix)
-- [Notificações de Orders](https://www.mercadopago.com.br/developers/pt/docs/checkout-api-orders/notifications)
-- [Validador de webhook do SDK .NET](https://github.com/mercadopago/sdk-dotnet/blob/master/src/MercadoPago/Webhook/WebhookSignatureValidator.cs)
+Não há workflow de GitHub Actions versionado (`.github/workflows`) neste repositório. Build, testes e publicação de imagens não são executados automaticamente por pipeline configurado aqui. A entrega e implantação são manuais.
+
+## 21. SonarCloud
+
+Não foi encontrada configuração ou workflow do SonarCloud neste repositório. Não há análise nem Quality Gate configurado a declarar.
+
+## 22. Kubernetes
+
+Não há manifests, Helm chart ou configuração Kubernetes implementados. A aplicação está documentada para execução local e container Docker; Kubernetes permanece pendente.
+
+## 23. Observabilidade e monitoramento
+
+A aplicação usa logs do ASP.NET Core e logs estruturados dos workers para falhas de integração, reconciliação e mensagens não processadas. `GET /health` é um endpoint simples e não verifica dependências. Não há métricas, tracing distribuído, dashboards, alertas ou probes de prontidão configurados neste repositório. O `lastError` do estado local ajuda a identificar a categoria da última falha, mas não substitui monitoramento operacional.
+
+## 24. Decisões arquiteturais e limitações conhecidas
+
+- Saga coreografada com uma réplica; SQLite é estado próprio do Billing e não deve ser compartilhado entre instâncias.
+- Um orçamento e uma operação de pagamento por OS nesta implementação mínima.
+- Valor do orçamento é recebido pela API, sem integração a catálogo/preçário.
+- Não há autenticação/autorização de usuário nesta API; IDs e CORS não substituem autorização.
+- A compensação pode exigir revisão manual; não existe evento distribuído de “compensação concluída”.
+- Estornos são integrais; reembolsos parciais e reconciliação de operações criadas fora deste fluxo não estão implementados.
+- `GET /health` não confirma disponibilidade de RabbitMQ, SQLite ou Mercado Pago.
+- Sem workflow CI/CD, SonarCloud, Kubernetes, métricas e tracing configurados.
+- O `docker-compose.yaml` depende de rede e broker externos, e precisa ter a credencial inline removida/rotacionada antes do uso.
+
+Pendências relevantes para completar a entrega operacional da Fase 4: substituir a credencial inline por gestão segura de segredos; tornar o Compose autônomo ou documentar/provisionar formalmente suas dependências externas; adicionar pipeline CI/CD e verificações automatizadas de qualidade; decidir se Kubernetes, SonarCloud, cobertura mínima e observabilidade avançada são requisitos da avaliação; definir o contrato de retorno da compensação aos serviços participantes; e resolver limitações de autenticação, fonte confiável de preços e operação multi-réplica antes de qualquer uso produtivo.

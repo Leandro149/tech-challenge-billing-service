@@ -16,6 +16,7 @@ public sealed class RabbitMqPublisherTests
         "ORD123", "pedido-123", 50m, "processed", "accredited", "private-pix", "private-image", "private-ticket");
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void Event_identifies_same_state_across_redeliveries_and_omits_pix_data()
     {
         var first = PaymentStatusUpdated.From(Payment);
@@ -35,6 +36,7 @@ public sealed class RabbitMqPublisherTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Nonresponding_broker_times_out_safely_and_allows_next_attempt()
     {
         // TCP aceita conexões, mas não responde ao handshake AMQP: não depende de RabbitMQ externo.
@@ -61,6 +63,7 @@ public sealed class RabbitMqPublisherTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task Caller_cancellation_is_preserved()
     {
         await using var publisher = CreatePublisher(new RabbitMqOptions());

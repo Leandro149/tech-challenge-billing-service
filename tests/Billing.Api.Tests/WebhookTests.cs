@@ -7,6 +7,7 @@ using RabbitMQ.Client;
 
 namespace Billing.Api.Tests;
 
+[Trait("Category", "Integration")]
 public sealed class WebhookTests
 {
     private static HttpRequestMessage Notification(

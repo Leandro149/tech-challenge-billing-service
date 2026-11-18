@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: billing-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: billing-api
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: billing-api
+          image: billing-api:ci
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: Saga__Enabled
+              value: "false"
+            - name: Saga__DatabasePath
+              value: /data/billing.db
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+          volumeMounts:
+            - name: billing-data
+              mountPath: /data
+      volumes:
+        - name: billing-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-api
+spec:
+  selector:
+    app.kubernetes.io/name: billing-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

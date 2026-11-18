@@ -21,7 +21,7 @@ services:
       Saga__Exchange: "techchallenge.events"
       Saga__Queue: "billing-service.events"
       Saga__DatabasePath: "/app/.data/billing.db"
-      MercadoPago__AccessToken: "APP_USR-7992015803527614-111618-567d86d0b2461c0c1c09810a1e230eda-3848674041"
+      MercadoPago__AccessToken: "${MercadoPago__AccessToken:-}"
       Payment__Provider: "${Payment__Provider:-MercadoPago}"
 
     volumes:

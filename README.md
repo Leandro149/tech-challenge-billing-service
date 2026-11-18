@@ -2,7 +2,7 @@
 
 Serviço de faturamento em ASP.NET Core responsável por registrar orçamentos vinculados a ordens de serviço, solicitar pagamentos Pix e coordenar decisões e compensações financeiras. Participa de uma Saga coreografada com os serviços de OS e Execution por eventos RabbitMQ.
 
-> **Aviso de configuração:** o `docker-compose.yaml` atualmente versionado contém uma credencial configurada diretamente no ambiente do container. O valor não é reproduzido aqui. Não compartilhe nem use esse Compose como está: revogue/rotacione a credencial e substitua-a por uma configuração de segredo fora do arquivo antes de executar ou publicar uma imagem. A correção do Compose não faz parte desta entrega documental.
+> O Compose lê `MercadoPago__AccessToken` do ambiente. Se você usava a credencial anteriormente gravada no arquivo, revogue-a no Mercado Pago e configure uma nova no seu ambiente local.
 
 ## 1. Visão geral e responsabilidades
 
@@ -112,7 +112,7 @@ O perfil `http` inicia em `http://localhost:5080` com ambiente `Development`. Pa
 
 O `docker-compose.yaml` da raiz inicia apenas o container da API; não define um serviço RabbitMQ. Ele publica a API em `http://localhost:8082`, espera encontrar o broker pelo hostname `rabbitmq` e depende da rede Docker externa `tech-challenge-execution-service_default`. Portanto, não é uma composição autônoma: a rede e o broker precisam existir e ser acessíveis antes da inicialização.
 
-Depois de corrigir a credencial inline mencionada no aviso inicial e de preparar a rede e o broker:
+Prepare a rede e o broker. Para usar o Mercado Pago, forneça `MercadoPago__AccessToken` no ambiente do Compose antes de iniciar o container.
 
 ```powershell
 docker compose up -d --build
@@ -300,23 +300,25 @@ try {
 }
 ```
 
-O estado registrado do projeto relata 63 testes aprovados na validação da Fase 4, incluindo 3 testes opt-in com RabbitMQ real. Há dependência Coverlet no projeto de testes, mas não foi encontrado relatório atual de cobertura nem limite configurado; portanto, não há evidência para declarar uma porcentagem ou meta de 80%.
+Na esteira, as suítes unitária, de integração HTTP/Saga e de RabbitMQ real disponibilizam relatórios TRX, Cobertura XML e OpenCover em **Artifacts**.
 
 ## 20. CI/CD com GitHub Actions
 
-Não há workflow de GitHub Actions versionado (`.github/workflows`) neste repositório. Build, testes e publicação de imagens não são executados automaticamente por pipeline configurado aqui. A entrega e implantação são manuais.
+A [esteira do Billing](.github/workflows/billing-ci-cd.yml) roda em pushes e pull requests para `main`. Para uma execução manual, abra **Actions → Billing Service - CI/CD (main) → Run workflow** e selecione `main`.
+
+Após a compilação Release, os testes e a validação em Kubernetes, pushes e execuções manuais de `main` disponibilizam `billing-service-main.tar.gz` e o checksum SHA256 em **Artifacts**.
 
 ## 21. SonarCloud
 
-Não foi encontrada configuração ou workflow do SonarCloud neste repositório. Não há análise nem Quality Gate configurado a declarar.
+O job **SonarQube** importa a cobertura OpenCover e aguarda o Quality Gate. Ele usa o secret `SONAR_TOKEN` e as variáveis `SONAR_PROJECT_KEY` e `SONAR_ORGANIZATION` do GitHub Actions para publicar no SonarQube Cloud.
 
 ## 22. Kubernetes
 
-Não há manifests, Helm chart ou configuração Kubernetes implementados. A aplicação está documentada para execução local e container Docker; Kubernetes permanece pendente.
+O job **Validar imagem em Kubernetes** constrói a imagem com o `Dockerfile` da raiz, carrega a imagem em um cluster kind temporário e aplica o [manifesto de teste](k8s/billing-smoke.yaml). A esteira aguarda o Deployment e verifica se `/health` responde `healthy` pelo Service. Os workers da Saga ficam desativados nesse teste de inicialização. A suíte de RabbitMQ valida o fluxo de eventos separadamente.
 
 ## 23. Observabilidade e monitoramento
 
-A aplicação usa logs do ASP.NET Core e logs estruturados dos workers para falhas de integração, reconciliação e mensagens não processadas. `GET /health` é um endpoint simples e não verifica dependências. Não há métricas, tracing distribuído, dashboards, alertas ou probes de prontidão configurados neste repositório. O `lastError` do estado local ajuda a identificar a categoria da última falha, mas não substitui monitoramento operacional.
+A aplicação usa logs do ASP.NET Core e logs estruturados dos workers para falhas de integração, reconciliação e mensagens não processadas. O manifesto de teste usa `GET /health` como probe de prontidão. Esse endpoint não verifica dependências. O `lastError` do estado local ajuda a identificar a categoria da última falha, mas não substitui monitoramento operacional.
 
 ## 24. Decisões arquiteturais e limitações conhecidas
 
@@ -327,7 +329,6 @@ A aplicação usa logs do ASP.NET Core e logs estruturados dos workers para falh
 - A compensação pode exigir revisão manual; não existe evento distribuído de “compensação concluída”.
 - Estornos são integrais; reembolsos parciais e reconciliação de operações criadas fora deste fluxo não estão implementados.
 - `GET /health` não confirma disponibilidade de RabbitMQ, SQLite ou Mercado Pago.
-- Sem workflow CI/CD, SonarCloud, Kubernetes, métricas e tracing configurados.
-- O `docker-compose.yaml` depende de rede e broker externos, e precisa ter a credencial inline removida/rotacionada antes do uso.
+- O `docker-compose.yaml` depende de rede e broker externos.
 
-Pendências relevantes para completar a entrega operacional da Fase 4: substituir a credencial inline por gestão segura de segredos; tornar o Compose autônomo ou documentar/provisionar formalmente suas dependências externas; adicionar pipeline CI/CD e verificações automatizadas de qualidade; decidir se Kubernetes, SonarCloud, cobertura mínima e observabilidade avançada são requisitos da avaliação; definir o contrato de retorno da compensação aos serviços participantes; e resolver limitações de autenticação, fonte confiável de preços e operação multi-réplica antes de qualquer uso produtivo.
+Pendências operacionais incluem formalizar as dependências externas do Compose, definir o contrato de retorno da compensação e resolver limitações de autenticação, fonte confiável de preços e operação multi-réplica antes de qualquer uso produtivo.

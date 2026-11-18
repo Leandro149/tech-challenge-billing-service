@@ -9,6 +9,7 @@ using static Billing.Api.Tests.BillingSagaTests;
 
 namespace Billing.Api.Tests;
 
+[Trait("Category", "Integration")]
 public sealed class FakePaymentTests
 {
     [Fact]

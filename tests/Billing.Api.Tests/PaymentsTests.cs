@@ -5,6 +5,7 @@ using Billing.Api.Contracts;
 
 namespace Billing.Api.Tests;
 
+[Trait("Category", "Integration")]
 public sealed class PaymentsTests
 {
     private static object Input(decimal amount = 50, string email = "test_payer@example.com") =>
